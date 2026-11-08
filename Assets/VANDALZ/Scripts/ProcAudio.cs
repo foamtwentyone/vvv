@@ -260,4 +260,182 @@ public static class ProcAudio
             });
         }
     }
+
+    // ---------- Музыка ----------
+    // Лоу-фай хип-хоп бит (boom-bap, 92 BPM, ля минор), 4 такта по кругу.
+    // MusicBase — основной слой, MusicDanger — тревожный слой той же длины (вступает при охоте Закрасчика).
+
+    const float Bpm = 92f;
+    static float StepLen => 60f / Bpm / 4f; // шестнадцатая
+    static int LoopSamples => Mathf.RoundToInt(StepLen * 64 * Rate);
+
+    public static AudioClip MusicBase
+    {
+        get
+        {
+            if (cache.TryGetValue("musicBase", out var c) && c != null) return c;
+            var buf = new float[LoopSamples];
+            var r = new System.Random(92);
+            float[] bassNotes = { 55f, 55f, 43.65f, 49f };
+            float[][] chords =
+            {
+                new[] { 220f, 261.63f, 329.63f }, new[] { 220f, 261.63f, 329.63f },
+                new[] { 174.61f, 220f, 261.63f }, new[] { 196f, 246.94f, 293.66f },
+            };
+            for (int step = 0; step < 64; step++)
+            {
+                int bar = step / 16, pos = step % 16;
+                float swing = (pos % 2 == 1) ? StepLen * 0.22f : 0f;
+                int at = Mathf.RoundToInt((step * StepLen + swing) * Rate);
+                if (pos == 0 || pos == 7 || pos == 10) { Kick(buf, at, 1f); Bass(buf, at, bassNotes[bar], pos == 0 ? 0.42f : 0.3f); }
+                if (pos == 4 || pos == 12) Snare(buf, at, 0.55f, r);
+                if (pos % 2 == 0) Hat(buf, at, pos == 14 ? 0.12f : 0.07f, pos == 14 ? 18f : 60f, r);
+            }
+            // Мягкий аккордовый «пэд» и потрескивание пластинки.
+            int barLen = LoopSamples / 4;
+            for (int i = 0; i < buf.Length; i++)
+            {
+                int bar = Mathf.Min(3, i / barLen);
+                float t = i / (float)Rate;
+                float tb = (i - bar * barLen) / (float)Rate;
+                float env = Mathf.Clamp01(tb / 0.4f) * Mathf.Clamp01((barLen / (float)Rate - tb) / 0.3f);
+                float pad = 0f;
+                foreach (float f in chords[bar]) pad += Mathf.Sin(t * 2f * Mathf.PI * f) + 0.3f * Mathf.Sin(t * 4f * Mathf.PI * f);
+                buf[i] += pad * 0.022f * env;
+                if (r.NextDouble() < 0.0004) buf[i] += (float)(r.NextDouble() - 0.5) * 0.25f;
+                buf[i] += (float)(r.NextDouble() - 0.5) * 0.006f;
+            }
+            return FinishMusic("musicBase", buf);
+        }
+    }
+
+    public static AudioClip MusicDanger
+    {
+        get
+        {
+            if (cache.TryGetValue("musicDanger", out var c) && c != null) return c;
+            var buf = new float[LoopSamples];
+            var r = new System.Random(13);
+            float[] bassNotes = { 55f, 55f, 43.65f, 49f };
+            for (int step = 0; step < 64; step++)
+            {
+                int bar = step / 16, pos = step % 16;
+                int at = Mathf.RoundToInt(step * StepLen * Rate);
+                Hat(buf, at, 0.05f + (pos % 4 == 2 ? 0.04f : 0f), 70f, r);
+                if (pos % 2 == 0) SawPulse(buf, at, bassNotes[bar] * 2f, 0.12f);
+                if (pos == 0) Stab(buf, at, 0.12f);
+            }
+            return FinishMusic("musicDanger", buf);
+        }
+    }
+
+    static AudioClip FinishMusic(string name, float[] buf)
+    {
+        for (int i = 0; i < buf.Length; i++) buf[i] = (float)System.Math.Tanh(buf[i] * 1.2f) * 0.8f; // мягкий лимитер
+        var clip = AudioClip.Create(name, buf.Length, 1, Rate, false);
+        clip.SetData(buf, 0);
+        cache[name] = clip;
+        return clip;
+    }
+
+    static void Add(float[] buf, int at, int len, System.Func<float, float> f)
+    {
+        for (int i = 0; i < len; i++)
+        {
+            int k = (at + i) % buf.Length; // хвост звука заворачиваем в начало — петля без щелчков
+            buf[k] += f(i / (float)Rate);
+        }
+    }
+
+    static void Kick(float[] buf, int at, float v)
+    {
+        float phase = 0f;
+        Add(buf, at, (int)(0.35f * Rate), t =>
+        {
+            float freq = 45f + 80f * Mathf.Exp(-t * 30f);
+            phase += freq / Rate;
+            return Mathf.Sin(phase * 2f * Mathf.PI) * Mathf.Exp(-t * 9f) * v;
+        });
+    }
+
+    static void Snare(float[] buf, int at, float v, System.Random r)
+    {
+        float low = 0f;
+        Add(buf, at, (int)(0.25f * Rate), t =>
+        {
+            float w = (float)(r.NextDouble() * 2 - 1);
+            low += (w - low) * 0.3f;
+            return ((w - low) * 0.8f * Mathf.Exp(-t * 16f) + Mathf.Sin(t * 2f * Mathf.PI * 185f) * 0.5f * Mathf.Exp(-t * 25f)) * v;
+        });
+    }
+
+    static void Hat(float[] buf, int at, float v, float decay, System.Random r)
+    {
+        float low = 0f;
+        Add(buf, at, (int)(0.12f * Rate), t =>
+        {
+            float w = (float)(r.NextDouble() * 2 - 1);
+            low += (w - low) * 0.5f;
+            return (w - low) * Mathf.Exp(-t * decay) * v;
+        });
+    }
+
+    static void Bass(float[] buf, int at, float freq, float v)
+    {
+        Add(buf, at, (int)(0.45f * Rate), t =>
+        {
+            float x = Mathf.Sin(t * 2f * Mathf.PI * freq) + 0.25f * Mathf.Sin(t * 4f * Mathf.PI * freq);
+            return x * Mathf.Exp(-t * 4f) * Mathf.Clamp01(t / 0.01f) * v;
+        });
+    }
+
+    static void SawPulse(float[] buf, int at, float freq, float v)
+    {
+        Add(buf, at, (int)(0.14f * Rate), t =>
+        {
+            float saw = 2f * (t * freq - Mathf.Floor(t * freq + 0.5f));
+            return saw * Mathf.Exp(-t * 18f) * v;
+        });
+    }
+
+    static void Stab(float[] buf, int at, float v)
+    {
+        Add(buf, at, (int)(0.5f * Rate), t =>
+            (Mathf.Sin(t * 2f * Mathf.PI * 466.16f) + Mathf.Sin(t * 2f * Mathf.PI * 440f)) * Mathf.Exp(-t * 6f) * v);
+    }
+
+    // ---------- Ещё эффекты ----------
+
+    // Где-то за стеной проходит поезд: нарастающий гул и дребезг.
+    public static AudioClip TrainRumble
+    {
+        get
+        {
+            float low = 0f, low2 = 0f;
+            const float len = 5f;
+            return Make("train", len, (i, t) =>
+            {
+                low += (Rand() - low) * 0.01f;
+                low2 += (Rand() - low2) * 0.08f;
+                float env = Mathf.Sin(Mathf.PI * t / len);
+                float clack = Mathf.Repeat(t, 0.42f) < 0.03f ? 0.4f : 0f;
+                return (low * 9f + low2 * 0.3f * clack) * env * env;
+            });
+        }
+    }
+
+    // Подобрал золотую крышку: звонкий колокольчик.
+    public static AudioClip Collect => Make("collect", 1.1f, (i, t) =>
+    {
+        float[] notes = { 1046.5f, 1318.5f, 1568f, 2093f };
+        float s = 0f;
+        for (int k = 0; k < notes.Length; k++)
+        {
+            float start = k * 0.06f;
+            if (t < start) continue;
+            float dt = t - start;
+            s += Mathf.Sin(dt * 2f * Mathf.PI * notes[k]) * Mathf.Exp(-dt * 5f) * 0.14f;
+        }
+        return s;
+    });
 }

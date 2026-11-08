@@ -28,7 +28,14 @@ public class PaintStroke : MonoBehaviour
     public Bounds Bounds => bounds;
     Bounds bounds;
 
-    public void MarkDecor() => IsDecor = true;
+    float decorBrightness = 1f;
+
+    // Старый тег (декор уровня): Закрасчик его не трогает; brightness < 1 — выцвел.
+    public void MarkDecor(float brightness = 0.75f)
+    {
+        IsDecor = true;
+        decorBrightness = brightness;
+    }
 
     public StrokeStyle Style { get; private set; }
     public bool Solid { get; private set; }
@@ -91,6 +98,8 @@ public class PaintStroke : MonoBehaviour
         solidMaterial.EnableKeyword("_EMISSION"); // неоновое свечение — его подхватывает bloom камеры
         // Контур по нормалям (меш мазка в мировых координатах), тонкий и тёмный.
         ProtoMaterials.SetOutline(solidMaterial, 2f, new Color(0.03f, 0.02f, 0.05f), false);
+        ProtoMaterials.SetRim(solidMaterial, new Color(1f, 1f, 1f) * 0.55f, 2.5f);  // светлая кайма — «объём» неона
+        ProtoMaterials.SetHighlight(solidMaterial, Color.white);                    // глянцевый блик краски
         mr.sharedMaterials = new[] { solidMaterial, PaintTextures.Stroke };
         mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
     }
@@ -296,7 +305,7 @@ public class PaintStroke : MonoBehaviour
         if (points.Count == 0) return;
         int last = points.Count - 1;
         Color c = WetColor(last);
-        if (IsDecor) c *= 0.75f; // старые теги потускнели
+        if (IsDecor) { c *= decorBrightness; c.a = 1f; } // старые теги потускнели
         float wet = Wet(last);
         solidMaterial.color = c;
         solidMaterial.SetColor("_EmissionColor", c * (ProtoMaterials.IsToon ? 1.15f : 0.35f));

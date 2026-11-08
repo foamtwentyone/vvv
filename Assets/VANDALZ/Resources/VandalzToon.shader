@@ -14,6 +14,9 @@ Shader "VANDALZ/Toon"
         _EmissionColor ("Emission", Color) = (0,0,0,1)
         _Glossiness ("Smoothness", Range(0,1)) = 0.2
         _ShadowColor ("Shadow Tint", Color) = (0.55,0.6,0.75,1)
+        _RimColor ("Rim Color", Color) = (0,0,0,0)
+        _RimPower ("Rim Power", Float) = 3
+        _ToonSpec ("Toon Highlight", Color) = (0,0,0,0)
         _OutlineColor ("Outline Color", Color) = (0.03,0.025,0.05,1)
         _OutlineWidth ("Outline Width (px)", Float) = 2.2
         _OutlineFromCenter ("Outline From Center", Range(0,1)) = 1
@@ -92,10 +95,14 @@ Shader "VANDALZ/Toon"
         fixed4 _Color;
         fixed4 _EmissionColor;
         fixed4 _ShadowColor;
+        fixed4 _RimColor;
+        half _RimPower;
+        fixed4 _ToonSpec;
 
         struct Input
         {
             float2 uv_MainTex;
+            float3 viewDir;
         };
 
         // Три полосы света вместо плавного градиента + холодный оттенок в тени.
@@ -106,13 +113,16 @@ Shader "VANDALZ/Toon"
                  + smoothstep(0.62, 0.68, x) * 0.25;
         }
 
-        half4 LightingToon (SurfaceOutput s, half3 lightDir, half atten)
+        half4 LightingToon (SurfaceOutput s, half3 lightDir, half3 viewDir, half atten)
         {
             half ndl = dot(s.Normal, lightDir) * 0.5 + 0.5; // «половинчатый» Ламберт — мягче для мультяшного вида
             half lit = Bands(saturate(ndl * atten));
             half3 shade = lerp(_ShadowColor.rgb * 0.35, half3(1, 1, 1), lit);
+            // Резкий мультяшный блик (мокрая краска, лужи).
+            half nh = dot(s.Normal, normalize(lightDir + viewDir));
+            half spec = smoothstep(0.93, 0.96, nh) * saturate(atten * 2);
             half4 c;
-            c.rgb = s.Albedo * _LightColor0.rgb * shade * lit;
+            c.rgb = s.Albedo * _LightColor0.rgb * shade * lit + _ToonSpec.rgb * _LightColor0.rgb * spec;
             c.a = s.Alpha;
             return c;
         }
@@ -122,7 +132,9 @@ Shader "VANDALZ/Toon"
             fixed4 c = tex2D(_MainTex, IN.uv_MainTex) * _Color;
             o.Albedo = c.rgb;
             o.Alpha = c.a;
-            o.Emission = _EmissionColor.rgb;
+            // Светлая кайма по краю силуэта — объём, как на концепте.
+            half rim = 1 - saturate(dot(normalize(IN.viewDir), o.Normal));
+            o.Emission = _EmissionColor.rgb + _RimColor.rgb * pow(rim, _RimPower);
         }
         ENDCG
     }

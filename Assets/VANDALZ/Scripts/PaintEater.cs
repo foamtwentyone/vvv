@@ -32,6 +32,20 @@ public class PaintEater : MonoBehaviour
     public float stunDuration = 4.5f;
 
     public enum State { Patrol, Investigate, Erase, Stunned }
+
+    public static readonly System.Collections.Generic.List<PaintEater> All = new System.Collections.Generic.List<PaintEater>();
+    // Насколько он сейчас «опасен» для музыки: 0 — спокоен/далеко, 1 — охотится рядом.
+    public float Threat
+    {
+        get
+        {
+            if (player == null || IsStunned) return 0f;
+            float d = Vector3.Distance(player.transform.position, transform.position);
+            float near = Mathf.Clamp01((14f - d) / 8f);
+            float alert = CurrentState == State.Patrol ? 0.35f : 1f;
+            return near * alert;
+        }
+    }
     public State CurrentState { get; private set; } = State.Patrol;
     public bool IsStunned => CurrentState == State.Stunned;
 
@@ -102,6 +116,8 @@ public class PaintEater : MonoBehaviour
         if (paint.HasProperty("_Glossiness")) paint.SetFloat("_Glossiness", 0.75f);
         if (paint.HasProperty("_Smoothness")) paint.SetFloat("_Smoothness", 0.75f);
         ProtoMaterials.SetOutline(paint, 2.6f, new Color(0.03f, 0.03f, 0.05f), true);
+        ProtoMaterials.SetRim(paint, new Color(0.55f, 0.65f, 0.8f) * 0.6f, 2.2f); // холодная кайма — «мокрая» краска
+        ProtoMaterials.SetHighlight(paint, new Color(0.9f, 0.95f, 1f));
         var dark = ProtoMaterials.Get(new Color(0.3f, 0.3f, 0.33f));
 
         body = new GameObject("Body").transform;
@@ -232,8 +248,8 @@ public class PaintEater : MonoBehaviour
         return new Vector3(Mathf.Clamp(p.x, areaMinXZ.x, areaMaxXZ.x), floorY, Mathf.Clamp(p.z, areaMinXZ.y, areaMaxXZ.y));
     }
 
-    void OnEnable() => PaintSpray.SprayHeard += OnSprayHeard;
-    void OnDisable() => PaintSpray.SprayHeard -= OnSprayHeard;
+    void OnEnable() { PaintSpray.SprayHeard += OnSprayHeard; All.Add(this); }
+    void OnDisable() { PaintSpray.SprayHeard -= OnSprayHeard; All.Remove(this); }
 
     void OnSprayHeard(Vector3 where)
     {
@@ -261,6 +277,7 @@ public class PaintEater : MonoBehaviour
             stunUntil = Time.time + stunDuration;
             target = null;
             ProcAudio.PlayAt(ProcAudio.EnemyGrowl, transform.position, 1f, 1.6f);
+            FX.Puff(head.position + Vector3.up * 0.3f, new Color(0.8f, 1f, 0.3f), 24, 2.5f, 0.12f, 0.7f);
             Stunned?.Invoke();
         }
     }
@@ -397,6 +414,7 @@ public class PaintEater : MonoBehaviour
             Vector3 away = new Vector3(d.x, 0f, d.z).normalized;
             if (away.sqrMagnitude < 0.01f) away = transform.forward;
             player.AddImpulse(away * pushForce + Vector3.up * 5f);
+            FX.Puff(player.transform.position + Vector3.up * 1.2f, new Color(0.45f, 0.46f, 0.5f), 26, 3f, 0.18f, 0.7f, 1f);
             if (cameraRig != null) cameraRig.AddTrauma(0.7f);
             ProcAudio.Play2D(ProcAudio.Hurt, 0.9f);
             hitCooldown = 1.2f;

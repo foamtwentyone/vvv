@@ -21,7 +21,7 @@ public class VandalzHUD : MonoBehaviour
     static readonly Color Ink = new Color(0.04f, 0.03f, 0.06f);
     static readonly Color Paper = new Color(0.1f, 0.1f, 0.14f, 0.92f);
 
-    Texture2D rounded, circle, ring, drip;
+    Texture2D rounded, circle, ring, drip, splat;
     GUIStyle box, text, textCenter, small, smallCenter, big, title, tiny, toastStyle, lineStyle, pulseStyle;
     readonly Dictionary<int, GUIStyle> logoStyles = new Dictionary<int, GUIStyle>();
     readonly GUIContent content = new GUIContent();
@@ -45,6 +45,7 @@ public class VandalzHUD : MonoBehaviour
         circle = MakeCircle(64, false);
         ring = MakeCircle(64, true);
         drip = MakeDrip();
+        splat = MakeSplat();
 
         box = new GUIStyle { normal = { background = rounded }, border = new RectOffset(13, 13, 13, 13) };
         text = new GUIStyle(GUI.skin.label) { fontSize = 26, fontStyle = FontStyle.Bold, richText = true, normal = { textColor = Color.white } };
@@ -75,7 +76,7 @@ public class VandalzHUD : MonoBehaviour
         }
 
         DrawToasts();
-        if (flow.HurtFlash > 0f) Fill(new Rect(0, 0, W, H), new Color(0.75f, 0.75f, 0.8f, 0.4f * flow.HurtFlash)); // серая «клякса» от удара
+        if (flow.HurtFlash > 0f) DrawSplats(flow.HurtFlash); // серые кляксы краски Закрасчика по краям экрана
         if (flow.FadeAlpha > 0f && flow.State != GameState.Title) Fill(new Rect(0, 0, W, H), new Color(0f, 0f, 0f, flow.FadeAlpha));
     }
 
@@ -126,9 +127,21 @@ public class VandalzHUD : MonoBehaviour
 
         int tags = flow.TagsDone, total = flow.TagsTotal;
         float py = y + 230;
-        Sticker(new Rect(W / 2 - 330, py, 200, 90), "ВРЕМЯ\n" + FormatTime(flow.Elapsed), Cyan, -3f, textCenter, Ink);
-        Sticker(new Rect(W / 2 - 100, py + 8, 200, 90), $"ТЕГИ\n{tags} / {total}", Yellow, 2f, textCenter, Ink);
-        Sticker(new Rect(W / 2 + 130, py, 200, 90), "ПАДЕНИЙ\n" + flow.Falls, Pink, -2f, textCenter, Ink);
+        Sticker(new Rect(W / 2 - 450, py, 190, 90), "ВРЕМЯ\n" + FormatTime(flow.Elapsed), Cyan, -3f, textCenter, Ink);
+        Sticker(new Rect(W / 2 - 230, py + 8, 190, 90), $"ТЕГИ\n{tags} / {total}", Yellow, 2f, textCenter, Ink);
+        Sticker(new Rect(W / 2 - 10, py, 190, 90), $"КРЫШКИ\n{flow.CapsDone} / {flow.CapsTotal}", new Color(1f, 0.7f, 0.2f), -2f, textCenter, Ink);
+        Sticker(new Rect(W / 2 + 210, py + 6, 190, 90), "ПАДЕНИЙ\n" + flow.Falls, Pink, 3f, textCenter, Ink);
+
+        // Оценка: большая буква, «шлёпается» на экран.
+        float pop = Mathf.Clamp01((flow.StateTime - 0.5f) / 0.25f);
+        if (pop > 0f)
+        {
+            float sc = Mathf.Lerp(2.2f, 1f, pop);
+            var rr = new Rect(W / 2 + 470 - 70 * sc, y + 40 - 70 * sc + 70, 140 * sc, 140 * sc);
+            Color rc = flow.Rank == "S" ? Lime : flow.Rank == "A" ? Cyan : flow.Rank == "B" ? Yellow : Pink;
+            Sticker(rr, flow.Rank, rc, -8f, logoStyles.TryGetValue(110, out var rs) ? rs : (logoStyles[110] = new GUIStyle(title) { fontSize = 110 }), Ink, pop);
+            Outlined(new Rect(rr.x - 40, rr.yMax + 10, rr.width + 80, 30), "очки: " + flow.Score, smallCenter, Color.white, 1.5f);
+        }
 
         string verdict = tags == total ? "Идеальный вандализм — все споты помечены!" : tags > 0 ? "Неплохо. Но споты ещё остались…" : "Выбрался, но станция осталась серой.";
         Outlined(new Rect(0, py + 130, W, 40), verdict, textCenter, tags == total ? Yellow : Color.white, 2f);
@@ -207,7 +220,7 @@ public class VandalzHUD : MonoBehaviour
 
     void DrawLevelPanel()
     {
-        var r = new Rect(30, 28, 440, 132);
+        var r = new Rect(30, 28, 440, 168);
         Panel(r, -1.5f, Paper, Pink);
         Matrix4x4 m = GUI.matrix;
         GUIUtility.RotateAroundPivot(-1.5f, r.center * scale);
@@ -220,7 +233,15 @@ public class VandalzHUD : MonoBehaviour
             Tex(new Rect(dr.x - 2, dr.y - 2, dr.width + 4, dr.height + 4), circle, Ink);
             Tex(dr, done ? circle : ring, done ? Yellow : new Color(1, 1, 1, 0.6f));
         }
-        Outlined(new Rect(r.x + 24, r.y + 90, r.width, 30), "Время  " + FormatTime(flow.Elapsed), small, new Color(1, 1, 1, 0.85f), 1.5f);
+        Outlined(new Rect(r.x + 24, r.y + 90, 100, 30), "Крышки", small, new Color(1, 1, 1, 0.75f), 1.5f);
+        for (int i = 0; i < flow.CapsTotal; i++)
+        {
+            bool done = i < flow.CapsDone;
+            var dr = new Rect(r.x + 128 + i * 34, r.y + 92, 26, 26);
+            Tex(new Rect(dr.x - 2, dr.y - 2, dr.width + 4, dr.height + 4), circle, Ink);
+            Tex(dr, done ? circle : ring, done ? new Color(1f, 0.7f, 0.15f) : new Color(1, 1, 1, 0.5f));
+        }
+        Outlined(new Rect(r.x + 24, r.y + 126, r.width, 30), "Время  " + FormatTime(flow.Elapsed), small, new Color(1, 1, 1, 0.85f), 1.5f);
         GUI.matrix = m;
     }
 
@@ -287,6 +308,27 @@ public class VandalzHUD : MonoBehaviour
             var r = new Rect(W / 2 - w / 2, y, w, 58 * pop);
             Sticker(r, t.text, t.color, t.tilt, toastStyle, Ink, a);
             y += 72f;
+        }
+    }
+
+    // Серые кляксы по краям экрана (удар Закрасчика), тают вместе со вспышкой.
+    static readonly Vector4[] SplatSpots =
+    {
+        new Vector4(0.02f, 0.05f, 360f, 20f), new Vector4(0.8f, 0.0f, 300f, -30f), new Vector4(-0.05f, 0.62f, 340f, 60f),
+        new Vector4(0.84f, 0.66f, 380f, 10f), new Vector4(0.42f, 0.86f, 260f, -70f),
+    };
+
+    void DrawSplats(float a)
+    {
+        foreach (var v in SplatSpots)
+        {
+            float size = v.z * (1f + 0.15f * (1f - a));
+            var r = new Rect(v.x * W, v.y * H, size, size);
+            Matrix4x4 m = GUI.matrix;
+            GUIUtility.RotateAroundPivot(v.w, r.center * scale);
+            Tex(Offset(r, 5, 5), splat, new Color(0f, 0f, 0f, 0.35f * a));
+            Tex(r, splat, new Color(0.5f, 0.51f, 0.55f, 0.9f * a));
+            GUI.matrix = m;
         }
     }
 
@@ -417,6 +459,37 @@ public class VandalzHUD : MonoBehaviour
                 float d = Vector2.Distance(new Vector2(x + 0.5f, y + 0.5f), new Vector2(size / 2f, size / 2f));
                 float a = Mathf.Clamp01(r - d + 0.5f);
                 if (hollow) a *= Mathf.Clamp01(d - (r - size * 0.12f) + 0.5f);
+                tex.SetPixel(x, y, new Color(1f, 1f, 1f, a));
+            }
+        tex.Apply();
+        return tex;
+    }
+
+    // Клякса краски: неровное пятно с брызгами вокруг.
+    static Texture2D MakeSplat()
+    {
+        const int s = 128;
+        var tex = new Texture2D(s, s, TextureFormat.RGBA32, false) { wrapMode = TextureWrapMode.Clamp, filterMode = FilterMode.Bilinear };
+        var rnd = new System.Random(3);
+        var drops = new Vector3[9];
+        for (int i = 0; i < drops.Length; i++)
+        {
+            float ang = (float)rnd.NextDouble() * Mathf.PI * 2f;
+            float dist = 34f + (float)rnd.NextDouble() * 24f;
+            drops[i] = new Vector3(64f + Mathf.Cos(ang) * dist, 64f + Mathf.Sin(ang) * dist, 3f + (float)rnd.NextDouble() * 6f);
+        }
+        for (int y = 0; y < s; y++)
+            for (int x = 0; x < s; x++)
+            {
+                float dx = x - 64f, dy = y - 64f;
+                float ang = Mathf.Atan2(dy, dx);
+                float edge = 30f + 6f * Mathf.Sin(ang * 5f) + 4f * Mathf.Sin(ang * 9f + 1f) + 3f * Mathf.Sin(ang * 13f + 2f);
+                float a = Mathf.Clamp01(edge - Mathf.Sqrt(dx * dx + dy * dy) + 0.5f);
+                foreach (var d in drops)
+                {
+                    float dd = Vector2.Distance(new Vector2(x, y), new Vector2(d.x, d.y));
+                    a = Mathf.Max(a, Mathf.Clamp01(d.z - dd + 0.5f));
+                }
                 tex.SetPixel(x, y, new Color(1f, 1f, 1f, a));
             }
         tex.Apply();

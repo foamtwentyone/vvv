@@ -44,6 +44,7 @@ public class SubwayLevelBuilder : MonoBehaviour
         BuildTrack();
         BuildDecor();
         BuildRuin();
+        BuildDressing();
         BuildLights();
         // Статическое объединение мешей здесь не используем: оно переводит вершины в мировые координаты,
         // и контур мультяшного шейдера («раздувание от центра объекта») перестал бы работать.
@@ -85,6 +86,7 @@ public class SubwayLevelBuilder : MonoBehaviour
         matPoster = EnvTextures.Make("poster", EnvTextures.Poster, Color.white, Vector2.one, 0.1f);
         matBrick = EnvTextures.Make("brick", EnvTextures.Brick, Color.white, Vector2.one, 0.1f);
         matMetal = ProtoMaterials.Get(new Color(0.28f, 0.29f, 0.32f));
+        ProtoMaterials.SetHighlight(matMetal, new Color(0.8f, 0.75f, 0.65f)); // металл бликует под лампами
         matStripe = ProtoMaterials.Get(new Color(0.08f, 0.22f, 0.5f));
         matSign = ProtoMaterials.Get(new Color(0.06f, 0.12f, 0.32f));
     }
@@ -222,6 +224,205 @@ public class SubwayLevelBuilder : MonoBehaviour
     readonly System.Random ruinRandom = new System.Random(42);
     float R(float a, float b) => a + (float)ruinRandom.NextDouble() * (b - a);
 
+    // ---------- Наполнение уровня ----------
+
+    readonly System.Random dressRandom = new System.Random(7);
+    float Rn(float a, float b) => a + (float)dressRandom.NextDouble() * (b - a);
+
+    void BuildDressing()
+    {
+        var rnd = dressRandom;
+
+        // Старые выцветшие теги по стенам (подписи-каракули).
+        Color[] tagColors = { new Color(0.75f, 1f, 0.2f), new Color(0.25f, 0.95f, 1f), new Color(1f, 0.3f, 0.65f), new Color(1f, 0.85f, 0.2f), new Color(0.7f, 0.4f, 1f), new Color(1f, 0.5f, 0.15f) };
+        int placed = 0;
+        for (int attempt = 0; attempt < 60 && placed < 16; attempt++)
+        {
+            float side = rnd.NextDouble() > 0.5 ? 1f : -1f;
+            float z = Rn(1f, EndZ - 2f);
+            float floorY = z > 32f ? UpperY : 0f;
+            float y = floorY + Rn(0.9f, 3.6f);
+            if (z > 31f && z < 33.5f) continue;
+            // Не залезаем на рамки спотов.
+            if (side < 0 && z > 5f && z < 8.6f) continue;
+            if (side > 0 && z > 14.4f && z < 17.6f) continue;
+            if (side < 0 && z > 38f && z < 41f) continue;
+            if (side > 0 && z > 4.4f && z < 5.8f) continue; // лестница-подсказка
+            OldTag(new Vector3(side * (HalfW - 0.02f), y, z), new Vector3(-side, 0f, 0f), tagColors[rnd.Next(tagColors.Length)], rnd);
+            placed++;
+        }
+
+        // Провода, провисающие между балками.
+        var cableMat = PaintTextures.MakeUnlit(null);
+        for (int i = 0; i < 9; i++)
+        {
+            float x = Rn(-3.4f, 3.4f);
+            float z0 = Rn(1f, EndZ - 6f);
+            float z1 = z0 + Rn(3f, 6f);
+            Cable(new Vector3(x, CeilY - 0.1f, z0), new Vector3(x + Rn(-0.6f, 0.6f), CeilY - 0.1f, z1), Rn(0.4f, 1.2f), cableMat);
+        }
+        // Оборванный провод над пропастью.
+        Cable(new Vector3(-1.2f, CeilY - 0.1f, 15.2f), new Vector3(-1.0f, CeilY - 2.6f, 15.5f), 0.2f, cableMat);
+
+        // Лужи с бликами от ламп.
+        var puddle = new Material(ProtoMaterials.Get(new Color(0.04f, 0.07f, 0.09f)));
+        ProtoMaterials.SetHighlight(puddle, new Color(1f, 0.9f, 0.7f));
+        ProtoMaterials.SetRim(puddle, new Color(0.2f, 0.35f, 0.4f), 3f);
+        ProtoMaterials.SetOutline(puddle, 0f, Color.black);
+        Vector3[] puddles = { new Vector3(1.2f, 0f, 4f), new Vector3(-1.5f, 0f, 9.5f), new Vector3(0.6f, 0f, 24f), new Vector3(-1f, 0f, 29.5f), new Vector3(1.5f, UpperY, 37f) };
+        foreach (var p in puddles)
+        {
+            var go = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            go.name = "Puddle";
+            Destroy(go.GetComponent<Collider>());
+            go.transform.SetParent(decor, false);
+            go.transform.position = p + Vector3.up * 0.006f;
+            go.transform.rotation = Quaternion.Euler(0f, Rn(0f, 180f), 0f);
+            go.transform.localScale = new Vector3(Rn(1.2f, 2f), 0.004f, Rn(0.8f, 1.3f));
+            go.GetComponent<Renderer>().sharedMaterial = puddle;
+        }
+
+        // Мусорные мешки.
+        var bag = new Material(ProtoMaterials.Get(new Color(0.07f, 0.09f, 0.08f)));
+        ProtoMaterials.SetHighlight(bag, new Color(0.5f, 0.55f, 0.5f));
+        Vector3[] bags = { new Vector3(-3.5f, 0f, 11f), new Vector3(-3.2f, 0f, 11.4f), new Vector3(3.5f, 0f, 29.8f), new Vector3(3.4f, UpperY, 34.5f), new Vector3(-3.5f, UpperY, 42.2f) };
+        foreach (var b in bags)
+        {
+            var go = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            go.name = "TrashBag";
+            go.transform.SetParent(decor, false);
+            float sz = Rn(0.5f, 0.7f);
+            go.transform.position = b + Vector3.up * sz * 0.35f;
+            go.transform.rotation = Quaternion.Euler(Rn(-10f, 10f), Rn(0f, 360f), Rn(-10f, 10f));
+            go.transform.localScale = new Vector3(sz, sz * 0.75f, sz * 0.9f);
+            go.GetComponent<Renderer>().sharedMaterial = bag;
+        }
+
+        // Сломанный автомат с напитками в углу у старта.
+        var machine = Block("VendingMachine", new Vector3(3.45f, 0.95f, 0.75f), new Vector3(0.9f, 1.9f, 0.9f), ProtoMaterials.Get(new Color(0.55f, 0.1f, 0.12f)), 1f, true, 0f, Face.All, decor);
+        Block("VendingGlass", new Vector3(2.99f, 1.15f, 0.75f), new Vector3(0.03f, 1.1f, 0.6f), Emissive(new Color(0.3f, 0.85f, 1f), 0.7f), 1f, false, 0f, Face.All, decor);
+        WorldText.CreateOutlined(decor, "НАПИТКИ", new Vector3(2.97f, 1.82f, 0.75f), Quaternion.LookRotation(Vector3.right, Vector3.up), 0.1f, Color.white);
+        var vLight = new GameObject("VendingLight").AddComponent<Light>();
+        vLight.transform.SetParent(root, false);
+        vLight.transform.position = new Vector3(2.6f, 1.2f, 0.9f);
+        vLight.type = LightType.Point;
+        vLight.range = 3.5f;
+        vLight.intensity = 1.2f;
+        vLight.color = new Color(0.3f, 0.85f, 1f);
+        _ = machine;
+
+        // Красная «М» метро на стене.
+        WorldText.CreateOutlined(decor, "M", new Vector3(HalfW - 0.03f, 4.3f, 9.8f), Quaternion.LookRotation(Vector3.right, Vector3.up), 0.9f, new Color(1f, 0.15f, 0.2f), 0.04f);
+        var mLight = new GameObject("MetroSignLight").AddComponent<Light>();
+        mLight.transform.SetParent(root, false);
+        mLight.transform.position = new Vector3(HalfW - 0.6f, 4.3f, 9.8f);
+        mLight.type = LightType.Point;
+        mLight.range = 4.5f;
+        mLight.intensity = 1.6f;
+        mLight.color = new Color(1f, 0.2f, 0.25f);
+
+        // Полки для золотых крышек (без краски не достать).
+        Block("HighShelf", new Vector3(-HalfW + 0.3f, 3.4f, 10.2f), new Vector3(0.6f, 0.12f, 1.4f), matWood, 1f, true, 0f, Face.All, decor);
+        Block("HighShelf", new Vector3(HalfW - 0.3f, UpperY + 2.6f, 41f), new Vector3(0.6f, 0.12f, 1.4f), matWood, 1f, true, 0f, Face.All, decor);
+    }
+
+    // Подпись-каракуля: «буквы»-петли подряд и подчёркивание.
+    void OldTag(Vector3 start, Vector3 normal, Color color, System.Random rnd)
+    {
+        Vector3 along = Vector3.Cross(Vector3.up, normal).normalized; // вдоль стены
+        float len = 1.1f + (float)rnd.NextDouble() * 1.1f;
+        float h = 0.25f + (float)rnd.NextDouble() * 0.25f;
+        int letters = 3 + rnd.Next(4);
+        var pts = new System.Collections.Generic.List<Vector3>();
+        int n = letters * 6;
+        for (int i = 0; i <= n; i++)
+        {
+            float t = i / (float)n;
+            float loop = Mathf.Sin(t * letters * Mathf.PI * 2f);
+            float wob = (float)(rnd.NextDouble() - 0.5) * 0.05f;
+            pts.Add(start + along * (t * len + Mathf.Cos(t * letters * Mathf.PI * 2f) * 0.06f) + Vector3.up * (loop * h * 0.5f + wob + t * 0.08f));
+        }
+        float w = 0.06f + (float)rnd.NextDouble() * 0.05f;
+        DecorStrokeFaded(pts.ToArray(), normal, w, color);
+        if (rnd.NextDouble() > 0.4)
+            DecorStrokeFaded(new[] { start + along * 0.05f - Vector3.up * (h * 0.75f), start + along * (len * 0.5f) - Vector3.up * (h * 0.85f), start + along * (len + 0.15f) - Vector3.up * (h * 0.7f) }, normal, w * 0.8f, color);
+    }
+
+    void DecorStrokeFaded(Vector3[] pts, Vector3 normal, float width, Color color)
+    {
+        var go = new GameObject("OldTag");
+        go.transform.SetParent(gameplayRoot, false);
+        var st = go.AddComponent<PaintStroke>();
+        st.Init(color, StrokeStyle.Raised, 0.03f, false, 0f);
+        st.MarkDecor(0.45f);
+        foreach (var p in pts) st.AddPoint(p + normal * 0.015f, normal, width);
+    }
+
+    // Провод с провисанием (цепная линия).
+    void Cable(Vector3 a, Vector3 b, float sag, Material mat)
+    {
+        var go = new GameObject("Cable");
+        go.transform.SetParent(decor, false);
+        var lr = go.AddComponent<LineRenderer>();
+        lr.sharedMaterial = mat;
+        lr.startColor = lr.endColor = new Color(0.02f, 0.02f, 0.03f);
+        lr.widthMultiplier = 0.03f;
+        lr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        const int n = 16;
+        lr.positionCount = n;
+        for (int i = 0; i < n; i++)
+        {
+            float t = i / (float)(n - 1);
+            lr.SetPosition(i, Vector3.Lerp(a, b, t) + Vector3.down * (sag * 4f * t * (1f - t)));
+        }
+    }
+
+    // Объёмный луч света: полупрозрачный конус с аддитивным смешиванием (ярче вверху, тает к полу).
+    static Material shaftMaterial;
+    void LightShaft(Vector3 top, float height, bool broken)
+    {
+        if (shaftMaterial == null)
+        {
+            var sh = Shader.Find("Legacy Shaders/Particles/Additive");
+            if (sh == null) sh = Shader.Find("Particles/Additive");
+            if (sh == null) sh = Shader.Find("Mobile/Particles/Additive");
+            if (sh == null) return;
+            shaftMaterial = new Material(sh);
+            shaftMaterial.SetColor("_TintColor", new Color(0.5f, 0.5f, 0.5f, 0.5f));
+        }
+        const int seg = 18;
+        float r0 = 0.3f, r1 = Mathf.Max(1.2f, height * 0.38f);
+        var verts = new Vector3[seg * 2];
+        var cols = new Color[seg * 2];
+        var uvs = new Vector2[seg * 2];
+        var tris = new int[seg * 6];
+        Color warm = LampColor * (broken ? 0.06f : 0.13f);
+        for (int i = 0; i < seg; i++)
+        {
+            float a = i * Mathf.PI * 2f / seg;
+            Vector3 d = new Vector3(Mathf.Cos(a), 0f, Mathf.Sin(a) * 0.45f); // сплюснутый — лампа вытянута
+            verts[i] = d * r0;
+            verts[seg + i] = d * r1 + Vector3.down * height;
+            cols[i] = new Color(warm.r, warm.g, warm.b, 1f);
+            cols[seg + i] = new Color(0f, 0f, 0f, 0f);
+            uvs[i] = new Vector2(0.5f, 0.5f);
+            uvs[seg + i] = new Vector2(0.5f, 0.5f);
+            int j = (i + 1) % seg;
+            tris[i * 6] = i; tris[i * 6 + 1] = seg + i; tris[i * 6 + 2] = j;
+            tris[i * 6 + 3] = j; tris[i * 6 + 4] = seg + i; tris[i * 6 + 5] = seg + j;
+        }
+        var mesh = new Mesh { name = "LightShaft", vertices = verts, colors = cols, uv = uvs, triangles = tris };
+        mesh.RecalculateBounds();
+        var go = new GameObject("LightShaft");
+        go.transform.SetParent(lampsRoot, false);
+        go.transform.position = top;
+        go.AddComponent<MeshFilter>().sharedMesh = mesh;
+        var mr = go.AddComponent<MeshRenderer>();
+        mr.sharedMaterial = shaftMaterial;
+        mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        mr.receiveShadows = false;
+    }
+
     // Разруха: отбитая плитка с кирпичом, обломки у стен, ржавый вагон в тоннеле.
     void BuildRuin()
     {
@@ -354,6 +555,10 @@ public class SubwayLevelBuilder : MonoBehaviour
             flicker.tube = tube.GetComponent<Renderer>();
             flicker.broken = broken;
             flicker.baseIntensity = 1.7f;
+
+            // Объёмный луч света под лампой.
+            float floorY = z > 32f ? UpperY : (z > 12f && z < 20f ? PitY + 2f : 0f);
+            LightShaft(pos + Vector3.down * 0.05f, pos.y - floorY - 0.2f, broken);
         }
     }
 
@@ -447,6 +652,17 @@ public class SubwayLevelBuilder : MonoBehaviour
 
         // Закрасчик на средней платформе.
         PaintEater.Create(gameplayRoot, new Vector3(0f, 0f, 27f), new Vector2(-1.6f, 20.8f), new Vector2(1.6f, 31.2f), player, rig);
+
+        // Второй Закрасчик сторожит выход на верхнем ярусе.
+        PaintEater.Create(gameplayRoot, new Vector3(0f, UpperY, 38.5f), new Vector2(-1.6f, 35.2f), new Vector2(1.6f, 41.5f), player, rig);
+
+        // Золотые крышки: на высокой полке у старта, над пропастью (мост вверх), на полке у выхода.
+        GoldenCap.Create(gameplayRoot, new Vector3(-HalfW + 0.35f, 3.95f, 10.2f), player.transform);
+        GoldenCap.Create(gameplayRoot, new Vector3(0f, 2.3f, 16f), player.transform);
+        GoldenCap.Create(gameplayRoot, new Vector3(HalfW - 0.35f, UpperY + 3.15f, 41f), player.transform);
+
+        var music = gameObject.AddComponent<MusicPlayer>();
+        music.flow = flow;
 
         flow.Restarted += ResetCans;
         ResetCans();

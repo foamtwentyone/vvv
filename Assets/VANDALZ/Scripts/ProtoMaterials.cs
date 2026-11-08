@@ -70,4 +70,19 @@ public static class ProtoMaterials
         m.EnableKeyword("_EMISSION");
         if (m.HasProperty("_EmissionColor")) m.SetColor("_EmissionColor", emission);
     }
+
+    // Светлая кайма по краю силуэта (объём, «глянец» краски).
+    public static void SetRim(Material m, Color color, float power = 3f)
+    {
+        if (m == null || !m.HasProperty("_RimColor")) return;
+        m.SetColor("_RimColor", color);
+        m.SetFloat("_RimPower", power);
+    }
+
+    // Резкий мультяшный блик от ламп (мокрая краска, лужи, металл).
+    public static void SetHighlight(Material m, Color color)
+    {
+        if (m == null || !m.HasProperty("_ToonSpec")) return;
+        m.SetColor("_ToonSpec", color);
+    }
 }
