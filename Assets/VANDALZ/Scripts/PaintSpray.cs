@@ -217,7 +217,6 @@ public class PaintSpray : MonoBehaviour
         hasPrevAim = true;
 
         UpdateDrip();
-    }        UpdateDrip();
     }
 
     // Мокрая краска под ногами проседает.
