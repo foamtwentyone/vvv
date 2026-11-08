@@ -5,7 +5,7 @@ using UnityEngine;
 //  - бродит по своей платформе (area);
 //  - замечает свежую краску рядом (senseRadius), ползёт к ней и закатывает валиком — мазок сереет и исчезает;
 //  - если игрок подошёл вплотную — отталкивает его (можно улететь в пропасть).
-// Анимация: тело колышется и сплющивается, валик крутится, глаза следят за игроком.
+// Анимация: ходит на ногах, тело колышется, руки покачивают валиками, глаза следят за игроком, капли тянутся.
 public class PaintEater : MonoBehaviour
 {
     [Header("Где ходит")]
@@ -29,7 +29,7 @@ public class PaintEater : MonoBehaviour
     // Игрока толкнули (для интерфейса: вспышка, сообщение).
     public static event Action PlayerHit;
 
-    Transform body, roller, rollerPivot, pupilL, pupilR, eyeL, eyeR;
+    Transform body, roller, rollerPivot;
     Vector3 patrolTarget;
     PaintStroke target;
     float scanTimer, chewTimer, hitCooldown, growlCooldown;
@@ -54,39 +54,90 @@ public class PaintEater : MonoBehaviour
         return e;
     }
 
+    // ---------- Модель: высокий гуманоид из стекающей серой краски ----------
+
+    class Eye { public Transform pivot; public Vector3 basePos; }
+    class Hanging { public Transform t; public Vector3 anchorLocal; public Transform parent; public float length, width, phase; }
+
+    Transform legL, legR, kneeL, kneeR, armRaised, armDown, head;
+    readonly System.Collections.Generic.List<Eye> eyes = new System.Collections.Generic.List<Eye>();
+    readonly System.Collections.Generic.List<Hanging> hangs = new System.Collections.Generic.List<Hanging>();
+    float walkPhase;
+
     void BuildModel()
     {
         var paint = new Material(ProtoMaterials.Get(Gray));
         if (paint.HasProperty("_Glossiness")) paint.SetFloat("_Glossiness", 0.75f);
         if (paint.HasProperty("_Smoothness")) paint.SetFloat("_Smoothness", 0.75f);
+        ProtoMaterials.SetOutline(paint, 2.6f, new Color(0.03f, 0.03f, 0.05f), true);
+        var dark = ProtoMaterials.Get(new Color(0.3f, 0.3f, 0.33f));
 
         body = new GameObject("Body").transform;
         body.SetParent(transform, false);
 
-        // Тело — капля краски, пара наплывов и подтёков.
-        Part(PrimitiveType.Sphere, body, new Vector3(0f, 0.85f, 0f), new Vector3(1.25f, 1.5f, 1.15f), paint);
-        Part(PrimitiveType.Sphere, body, new Vector3(0f, 0.35f, 0f), new Vector3(1.55f, 0.7f, 1.45f), paint);
-        Part(PrimitiveType.Sphere, body, new Vector3(0.45f, 0.5f, 0.35f), new Vector3(0.45f, 0.6f, 0.45f), paint);
-        Part(PrimitiveType.Sphere, body, new Vector3(-0.5f, 0.6f, -0.2f), new Vector3(0.4f, 0.7f, 0.4f), paint);
-        Part(PrimitiveType.Sphere, body, new Vector3(0f, 1.62f, -0.05f), new Vector3(0.5f, 0.35f, 0.5f), paint);
+        // Ноги: бедро на шарнире, голень на «колене».
+        legL = Joint(body, new Vector3(-0.24f, 1.15f, 0f));
+        legR = Joint(body, new Vector3(0.24f, 1.15f, 0f));
+        foreach (var leg in new[] { legL, legR })
+        {
+            Part(PrimitiveType.Capsule, leg, new Vector3(0f, -0.3f, 0f), new Vector3(0.26f, 0.34f, 0.26f), paint);
+            var knee = Joint(leg, new Vector3(0f, -0.6f, 0f));
+            Part(PrimitiveType.Capsule, knee, new Vector3(0f, -0.28f, 0f), new Vector3(0.22f, 0.32f, 0.22f), paint);
+            Part(PrimitiveType.Sphere, knee, new Vector3(0f, -0.55f, 0.08f), new Vector3(0.3f, 0.14f, 0.4f), paint); // ступня-лужица
+            if (leg == legL) kneeL = knee; else kneeR = knee;
+        }
 
-        // Глаза.
-        var white = ProtoMaterials.Get(new Color(0.95f, 0.95f, 0.9f));
-        var black = ProtoMaterials.Get(new Color(0.05f, 0.05f, 0.06f));
-        eyeL = Part(PrimitiveType.Sphere, body, new Vector3(-0.24f, 1.18f, 0.5f), new Vector3(0.3f, 0.36f, 0.2f), white).transform;
-        eyeR = Part(PrimitiveType.Sphere, body, new Vector3(0.24f, 1.22f, 0.5f), new Vector3(0.26f, 0.3f, 0.2f), white).transform;
-        pupilL = Part(PrimitiveType.Sphere, body, new Vector3(-0.24f, 1.18f, 0.6f), new Vector3(0.12f, 0.14f, 0.06f), black).transform;
-        pupilR = Part(PrimitiveType.Sphere, body, new Vector3(0.24f, 1.22f, 0.6f), new Vector3(0.11f, 0.12f, 0.06f), black).transform;
+        // Туловище — сутулое, из нескольких наплывов краски.
+        Part(PrimitiveType.Capsule, body, new Vector3(0f, 1.6f, 0f), new Vector3(0.66f, 0.58f, 0.46f), paint).transform.localRotation = Quaternion.Euler(14f, 0f, 0f);
+        Part(PrimitiveType.Sphere, body, new Vector3(0f, 1.95f, 0.08f), new Vector3(0.82f, 0.62f, 0.56f), paint);
+        Part(PrimitiveType.Sphere, body, new Vector3(0.18f, 1.35f, 0.12f), new Vector3(0.4f, 0.45f, 0.35f), paint);
 
-        // Валик на ручке впереди.
-        var metal = ProtoMaterials.Get(new Color(0.25f, 0.25f, 0.28f));
-        Part(PrimitiveType.Cube, body, new Vector3(0.55f, 0.7f, 0.65f), new Vector3(0.07f, 0.07f, 0.7f), metal).transform.localRotation = Quaternion.Euler(35f, 0f, 0f);
-        Part(PrimitiveType.Cube, body, new Vector3(0f, 0.38f, 0.98f), new Vector3(1.2f, 0.06f, 0.06f), metal);
-        rollerPivot = new GameObject("RollerPivot").transform;
-        rollerPivot.SetParent(body, false);
-        rollerPivot.localPosition = new Vector3(0f, 0.22f, 1.05f);
-        roller = Part(PrimitiveType.Cylinder, rollerPivot, Vector3.zero, new Vector3(0.36f, 0.6f, 0.36f), paint).transform;
+        // Голова — бесформенный ком, наклонён вперёд.
+        head = Joint(body, new Vector3(0f, 2.35f, 0.18f));
+        Part(PrimitiveType.Sphere, head, new Vector3(0f, 0.25f, 0.05f), new Vector3(0.6f, 0.68f, 0.58f), paint);
+        Part(PrimitiveType.Sphere, head, new Vector3(-0.12f, 0.5f, -0.05f), new Vector3(0.32f, 0.3f, 0.3f), paint);
+
+        // Руки: одна поднята с валиком над головой, другая катит валик по полу.
+        armRaised = Joint(body, new Vector3(-0.46f, 2.05f, 0.05f));
+        armRaised.localRotation = Quaternion.Euler(-150f, 0f, -10f);
+        Part(PrimitiveType.Capsule, armRaised, new Vector3(0f, -0.55f, 0f), new Vector3(0.18f, 0.58f, 0.18f), paint);
+        var topRoller = Joint(armRaised, new Vector3(0f, -1.15f, 0.05f));
+        Part(PrimitiveType.Cube, topRoller, new Vector3(0.25f, 0f, 0f), new Vector3(0.5f, 0.05f, 0.05f), dark);
+        var topDrum = Part(PrimitiveType.Cylinder, topRoller, new Vector3(0.55f, -0.05f, 0f), new Vector3(0.36f, 0.42f, 0.36f), paint).transform;
+        topDrum.localRotation = Quaternion.Euler(0f, 0f, 90f);
+
+        armDown = Joint(body, new Vector3(0.48f, 2.0f, 0.05f));
+        armDown.localRotation = Quaternion.Euler(-38f, 0f, 8f);
+        Part(PrimitiveType.Capsule, armDown, new Vector3(0f, -0.6f, 0f), new Vector3(0.18f, 0.62f, 0.18f), paint);
+        Part(PrimitiveType.Sphere, armDown, new Vector3(0f, -1.22f, 0f), new Vector3(0.24f, 0.24f, 0.24f), paint); // кисть
+        // Ручка от кисти к валику у пола.
+        Part(PrimitiveType.Cube, body, new Vector3(0.36f, 0.62f, 0.86f), new Vector3(0.05f, 0.7f, 0.05f), dark).transform.localRotation = Quaternion.Euler(20f, 0f, 0f);
+        Part(PrimitiveType.Cube, body, new Vector3(0f, 0.27f, 1.0f), new Vector3(0.9f, 0.05f, 0.05f), dark);
+        rollerPivot = Joint(body, new Vector3(0f, 0.2f, 1.02f));
+        roller = Part(PrimitiveType.Cylinder, rollerPivot, Vector3.zero, new Vector3(0.36f, 0.42f, 0.36f), paint).transform;
         roller.localRotation = Quaternion.Euler(0f, 0f, 90f);
+
+        // Глаза: разных размеров и цветов, по голове и груди.
+        Color[] iris = { new Color(0.2f, 0.55f, 1f), new Color(1f, 0.85f, 0.15f), new Color(1f, 0.3f, 0.6f), new Color(0.4f, 1f, 0.35f), new Color(1f, 0.5f, 0.15f) };
+        AddEye(head, new Vector3(-0.15f, 0.3f, 0.31f), 0.17f, iris[0]);
+        AddEye(head, new Vector3(0.14f, 0.38f, 0.28f), 0.13f, iris[1]);
+        AddEye(head, new Vector3(0.03f, 0.12f, 0.33f), 0.11f, iris[2]);
+        AddEye(head, new Vector3(0.24f, 0.17f, 0.24f), 0.09f, iris[3]);
+        AddEye(head, new Vector3(-0.27f, 0.12f, 0.22f), 0.08f, iris[4]);
+        AddEye(head, new Vector3(-0.05f, 0.52f, 0.2f), 0.07f, iris[3]);
+        AddEye(body, new Vector3(0.2f, 2.0f, 0.36f), 0.1f, iris[1]);
+        AddEye(body, new Vector3(-0.22f, 1.82f, 0.33f), 0.08f, iris[2]);
+        AddEye(body, new Vector3(0.06f, 1.6f, 0.3f), 0.07f, iris[0]);
+
+        // Свисающие капли краски.
+        Hang(head, new Vector3(0.2f, 0f, 0.25f), 0.3f, 0.06f, paint);
+        Hang(head, new Vector3(-0.22f, -0.02f, 0.18f), 0.22f, 0.05f, paint);
+        Hang(body, new Vector3(0.3f, 1.62f, 0.25f), 0.35f, 0.07f, paint);
+        Hang(body, new Vector3(-0.28f, 1.5f, 0.2f), 0.28f, 0.06f, paint);
+        Hang(topRoller, new Vector3(0.4f, -0.2f, 0f), 0.5f, 0.06f, paint);
+        Hang(topRoller, new Vector3(0.7f, -0.2f, 0f), 0.35f, 0.05f, paint);
+        Hang(rollerPivot, new Vector3(0.25f, -0.15f, 0f), 0.12f, 0.05f, paint);
+        Hang(armDown, new Vector3(0.05f, -1.3f, 0f), 0.25f, 0.05f, paint);
 
         rollSound = gameObject.AddComponent<AudioSource>();
         rollSound.clip = ProcAudio.EnemyRoll;
@@ -96,6 +147,30 @@ public class PaintEater : MonoBehaviour
         rollSound.maxDistance = 20f;
         rollSound.volume = 0f;
         rollSound.Play();
+    }
+
+    static Transform Joint(Transform parent, Vector3 localPos)
+    {
+        var t = new GameObject("Joint").transform;
+        t.SetParent(parent, false);
+        t.localPosition = localPos;
+        return t;
+    }
+
+    void AddEye(Transform parent, Vector3 pos, float size, Color irisColor)
+    {
+        var pivot = Joint(parent, pos);
+        Part(PrimitiveType.Sphere, pivot, Vector3.zero, Vector3.one * size, ProtoMaterials.Get(new Color(0.96f, 0.95f, 0.88f)));
+        var irisMat = ProtoMaterials.Get(irisColor);
+        Part(PrimitiveType.Sphere, pivot, new Vector3(0f, 0f, size * 0.32f), new Vector3(size * 0.62f, size * 0.62f, size * 0.4f), irisMat);
+        Part(PrimitiveType.Sphere, pivot, new Vector3(0f, 0f, size * 0.47f), new Vector3(size * 0.3f, size * 0.3f, size * 0.12f), ProtoMaterials.Get(new Color(0.02f, 0.02f, 0.03f)));
+        eyes.Add(new Eye { pivot = pivot, basePos = pos });
+    }
+
+    void Hang(Transform parent, Vector3 anchor, float length, float width, Material mat)
+    {
+        var go = Part(PrimitiveType.Sphere, parent, anchor, new Vector3(width, length, width), mat);
+        hangs.Add(new Hanging { t = go.transform, anchorLocal = anchor, parent = parent, length = length, width = width, phase = UnityEngine.Random.value * 10f });
     }
 
     static GameObject Part(PrimitiveType type, Transform parent, Vector3 pos, Vector3 scale, Material mat)
@@ -227,33 +302,57 @@ public class PaintEater : MonoBehaviour
         float moved = Vector3.Distance(transform.position, lastPos);
         lastPos = transform.position;
         float moving = Mathf.Clamp01(moved / Mathf.Max(0.0001f, dt) / chaseSpeed);
-
-        // Колыхание и сплющивание.
         float t = Time.time;
-        float wobble = Mathf.Sin(t * (5f + moving * 6f));
-        body.localScale = new Vector3(1f + wobble * 0.05f, 1f - wobble * 0.07f, 1f + wobble * 0.05f);
-        body.localPosition = new Vector3(0f, Mathf.Abs(Mathf.Sin(t * 6f)) * 0.04f * moving, 0f);
 
-        // Валик крутится по пройденному пути.
+        // Шаги: фаза по пройденному пути.
+        walkPhase += moved * 2.6f;
+        float sw = Mathf.Sin(walkPhase) * moving;
+        legL.localRotation = Quaternion.Euler(sw * 32f, 0f, 0f);
+        legR.localRotation = Quaternion.Euler(-sw * 32f, 0f, 0f);
+        kneeL.localRotation = Quaternion.Euler(Mathf.Max(0f, -Mathf.Sin(walkPhase)) * 40f * moving, 0f, 0f);
+        kneeR.localRotation = Quaternion.Euler(Mathf.Max(0f, Mathf.Sin(walkPhase)) * 40f * moving, 0f, 0f);
+
+        // Тело колышется, как краска; при ходьбе подпрыгивает.
+        float wobble = Mathf.Sin(t * 3.1f);
+        body.localScale = new Vector3(1f + wobble * 0.03f, 1f - wobble * 0.025f, 1f + wobble * 0.03f);
+        body.localPosition = new Vector3(0f, Mathf.Abs(Mathf.Cos(walkPhase)) * 0.06f * moving, 0f);
+        head.localRotation = Quaternion.Euler(10f + Mathf.Sin(t * 1.7f) * 6f, Mathf.Sin(t * 0.9f) * 12f, Mathf.Sin(t * 1.3f) * 5f);
+
+        // Руки: поднятая покачивает валиком, нижняя катит.
+        armRaised.localRotation = Quaternion.Euler(-150f + Mathf.Sin(t * 1.4f) * 8f, 0f, -10f + Mathf.Sin(t * 0.8f) * 6f);
+        armDown.localRotation = Quaternion.Euler(-38f + sw * 6f, 0f, 8f);
+
+        // Нижний валик крутится по пройденному пути.
         rollAngle += moved / (0.18f * Mathf.PI * 2f) * 360f;
         roller.localRotation = Quaternion.Euler(rollAngle, 0f, 90f);
 
-        // Глаза следят за игроком, если он рядом.
-        Vector3 lookLocal = new Vector3(0f, 0f, 1f);
-        if (player != null)
+        // Глаза следят за игроком (каждый сам по себе), иногда моргают.
+        Vector3 target = player != null ? player.transform.position + Vector3.up * 1.5f : transform.position + transform.forward * 5f;
+        bool near = player != null && Vector3.Distance(target, head.position) < 10f;
+        for (int i = 0; i < eyes.Count; i++)
         {
-            Vector3 toPlayer = player.transform.position + Vector3.up * 1.5f - eyeL.position;
-            if (toPlayer.magnitude < 9f) lookLocal = body.InverseTransformDirection(toPlayer.normalized);
+            var e = eyes[i];
+            Quaternion look = near
+                ? Quaternion.LookRotation(target - e.pivot.position, Vector3.up)
+                : e.pivot.parent.rotation * Quaternion.Euler(Mathf.Sin(t * 0.7f + i) * 15f, Mathf.Sin(t * 0.5f + i * 2f) * 25f, 0f);
+            // Не даём глазу «смотреть внутрь головы».
+            Quaternion forward = e.pivot.parent.rotation;
+            look = Quaternion.RotateTowards(forward, look, 55f);
+            e.pivot.rotation = Quaternion.Slerp(e.pivot.rotation, look, 1f - Mathf.Exp(-(6f + i) * dt));
+            float blink = Mathf.Repeat(t + i * 0.73f, 3.7f + i * 0.3f) < 0.12f ? 0.15f : 1f;
+            e.pivot.localScale = new Vector3(1f, blink, 1f);
         }
-        Vector3 shift = new Vector3(Mathf.Clamp(lookLocal.x, -1f, 1f) * 0.07f, Mathf.Clamp(lookLocal.y, -1f, 1f) * 0.06f, 0f);
-        pupilL.localPosition = new Vector3(-0.24f, 1.18f, 0.6f) + shift;
-        pupilR.localPosition = new Vector3(0.24f, 1.22f, 0.6f) + shift;
-        // Моргание.
-        float blink = Mathf.Repeat(t, 4.3f) < 0.12f ? 0.1f : 1f;
-        eyeL.localScale = new Vector3(0.3f, 0.36f * blink, 0.2f);
-        eyeR.localScale = new Vector3(0.26f, 0.3f * blink, 0.2f);
-        pupilL.gameObject.SetActive(blink > 0.5f);
-        pupilR.gameObject.SetActive(blink > 0.5f);
+
+        // Капли тянутся и покачиваются.
+        foreach (var h in hangs)
+        {
+            float stretch = 1f + 0.25f * Mathf.Sin(t * 2.2f + h.phase) + 0.3f * moving;
+            float len = h.length * stretch;
+            h.t.localScale = new Vector3(h.width, len, h.width);
+            // Капля всегда висит строго вниз от точки крепления.
+            h.t.position = h.parent.TransformPoint(h.anchorLocal) + Vector3.down * (len * 0.5f);
+            h.t.rotation = Quaternion.identity;
+        }
 
         rollSound.volume = Mathf.Lerp(rollSound.volume, 0.5f * moving, 1f - Mathf.Exp(-8f * dt));
         rollSound.pitch = 0.8f + 0.4f * moving;

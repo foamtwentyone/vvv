@@ -79,7 +79,9 @@ public class PaintStroke : MonoBehaviour
 
         var mr = gameObject.AddComponent<MeshRenderer>();
         solidMaterial = new Material(ProtoMaterials.Get(Color.white));
-        solidMaterial.EnableKeyword("_EMISSION"); // лёгкое свечение — краска яркая даже в тени
+        solidMaterial.EnableKeyword("_EMISSION"); // неоновое свечение — его подхватывает bloom камеры
+        // Контур по нормалям (меш мазка в мировых координатах), тонкий и тёмный.
+        ProtoMaterials.SetOutline(solidMaterial, 2f, new Color(0.03f, 0.02f, 0.05f), false);
         mr.sharedMaterials = new[] { solidMaterial, PaintTextures.Stroke };
         mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
     }
@@ -92,6 +94,56 @@ public class PaintStroke : MonoBehaviour
         times.Add(Time.time);
         lastChangeTime = Time.time;
         Rebuild();
+        MaybeAddDrip(points.Count - 1);
+    }
+
+    // ---------- Подтёки краски ----------
+
+    class Drip { public Transform t; public Vector3 top; public float length, width, born; }
+    readonly List<Drip> drips = new List<Drip>();
+
+    // Иногда с моста или с надписи на стене свисает капля краски.
+    void MaybeAddDrip(int i)
+    {
+        if (Style == StrokeStyle.Flat || Depth < 0.08f) return;
+        if (Random.value > (Style == StrokeStyle.Bridge ? 0.3f : 0.2f)) return;
+
+        Vector3 p = points[i], n = normals[i];
+        float w = widths[i];
+        Vector3 top = Style == StrokeStyle.Bridge
+            ? p - n * Depth * 0.9f + Random.insideUnitSphere * w * 0.2f
+            : p + n * (Depth * 0.5f) - Vector3.up * (w * 0.35f);
+
+        var go = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        Destroy(go.GetComponent<Collider>());
+        go.name = "Drip";
+        go.transform.SetParent(transform, true);
+        go.GetComponent<Renderer>().sharedMaterial = solidMaterial;
+        go.GetComponent<Renderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        drips.Add(new Drip
+        {
+            t = go.transform,
+            top = top,
+            length = Random.Range(0.15f, 0.5f) * (Style == StrokeStyle.Bridge ? 1f : 0.7f),
+            width = Random.Range(0.06f, 0.1f),
+            born = Time.time,
+        });
+        AnimateDrips();
+    }
+
+    // Капля медленно вытягивается вниз и чуть покачивается.
+    void AnimateDrips()
+    {
+        foreach (var d in drips)
+        {
+            if (d.t == null) continue;
+            float k = Mathf.Clamp01((Time.time - d.born) / 1.2f);
+            k = 1f - (1f - k) * (1f - k);
+            float len = Mathf.Max(0.02f, d.length * k) * eraseShrink;
+            float wobble = 1f + 0.08f * Mathf.Sin(Time.time * 3f + d.born * 7f);
+            d.t.localScale = new Vector3(d.width * wobble, len, d.width * wobble) * (0.6f + 0.4f * eraseShrink);
+            d.t.position = d.top - Vector3.up * (len * 0.5f);
+        }
     }
 
     void OnEnable() => All.Add(this);
@@ -126,6 +178,7 @@ public class PaintStroke : MonoBehaviour
 
     void Update()
     {
+        if (drips.Count > 0) AnimateDrips();
         if (IsErasing)
         {
             float k = Mathf.Clamp01((Time.time - eraseStart) / eraseDuration);
@@ -207,7 +260,7 @@ public class PaintStroke : MonoBehaviour
         Color c = WetColor(last);
         float wet = Wet(last);
         solidMaterial.color = c;
-        solidMaterial.SetColor("_EmissionColor", c * 0.35f);
+        solidMaterial.SetColor("_EmissionColor", c * (ProtoMaterials.IsToon ? 1.15f : 0.35f));
         float smooth = Mathf.Lerp(0.3f, 0.85f, wet);
         if (solidMaterial.HasProperty("_Glossiness")) solidMaterial.SetFloat("_Glossiness", smooth); // Built-in
         if (solidMaterial.HasProperty("_Smoothness")) solidMaterial.SetFloat("_Smoothness", smooth); // URP
@@ -305,7 +358,7 @@ public class PaintStroke : MonoBehaviour
         // Конец: от полного сечения к острию.
         for (int j = 1; j <= TipRings; j++) { AddRing(m - 1, j, 1f, bridge, profile); rings++; }
 
-        // Треугольники между соседними кольцами (обе стороны — нормали заданы вручную).
+        // Треугольники между соседними кольцами — наружу (нормали заданы вручную).
         int edges = bridge ? profile : profile - 1;
         for (int r = 0; r < rings - 1; r++)
         {
@@ -314,8 +367,6 @@ public class PaintStroke : MonoBehaviour
             {
                 int k1 = (k + 1) % profile;
                 int a = ring0 + k, b = ring0 + k1, c = ring1 + k, d = ring1 + k1;
-                solidTris.Add(a); solidTris.Add(c); solidTris.Add(b);
-                solidTris.Add(b); solidTris.Add(c); solidTris.Add(d);
                 solidTris.Add(a); solidTris.Add(b); solidTris.Add(c);
                 solidTris.Add(b); solidTris.Add(d); solidTris.Add(c);
             }

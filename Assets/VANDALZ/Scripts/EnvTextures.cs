@@ -5,7 +5,7 @@ using UnityEngine;
 // шпалы, ржавчина, старые афиши. Всё генерируется кодом при первом обращении.
 public static class EnvTextures
 {
-    static Texture2D tiles, concrete, darkConcrete, tactile, rust, poster, wood;
+    static Texture2D tiles, concrete, darkConcrete, tactile, rust, poster, wood, brick;
     static readonly Dictionary<string, Material> materials = new Dictionary<string, Material>();
 
     // Материал с текстурой. tiling — сколько повторов текстуры на объект (подбирается под размер).
@@ -29,6 +29,7 @@ public static class EnvTextures
     public static Texture2D Rust => rust != null ? rust : (rust = MakeRust());
     public static Texture2D Wood => wood != null ? wood : (wood = MakeWood());
     public static Texture2D Poster => poster != null ? poster : (poster = MakePoster());
+    public static Texture2D Brick => brick != null ? brick : (brick = MakeBrick());
 
     // ---------- Генерация ----------
 
@@ -91,7 +92,7 @@ public static class EnvTextures
         var tileShade = new float[cols * 2, rows];
         for (int i = 0; i < cols * 2; i++)
             for (int j = 0; j < rows; j++)
-                tileShade[i, j] = 0.86f + (float)r.NextDouble() * 0.12f;
+                tileShade[i, j] = 0.8f + (float)r.NextDouble() * 0.18f;
 
         for (int y = 0; y < size; y++)
         {
@@ -105,13 +106,13 @@ public static class EnvTextures
                 float edge = Mathf.Min(Mathf.Min(lx, tileW - lx), Mathf.Min(ly, tileH - ly));
 
                 float dirt = Fbm(x, y, size, 3, 4);
-                float grime = Mathf.Clamp01((dirt - 0.45f) * 2.2f);
-                Color tile = new Color(0.92f, 0.93f, 0.86f) * tileShade[col % (cols * 2), row % rows];
+                float grime = Mathf.Clamp01((dirt - 0.38f) * 2.4f);
+                Color tile = new Color(0.86f, 0.8f, 0.66f) * tileShade[col % (cols * 2), row % rows];
                 // Лёгкая выпуклость края плитки.
                 if (edge < 3f) tile *= 0.9f + 0.1f * edge / 3f;
                 Color grout = new Color(0.22f, 0.22f, 0.2f);
                 Color c = edge < 1.4f ? grout : tile;
-                c = Color.Lerp(c, new Color(0.35f, 0.33f, 0.26f), grime * 0.55f);
+                c = Color.Lerp(c, new Color(0.3f, 0.25f, 0.17f), grime * 0.7f);
                 // Редкие сколы.
                 if (edge >= 1.4f && Fbm(x, y, size, 77, 16) > 0.8f) c *= 0.6f;
                 c.a = 1f;
@@ -163,6 +164,36 @@ public static class EnvTextures
                 c.a = 1f;
                 tex.SetPixel(x, y, c);
             }
+        tex.Apply();
+        return tex;
+    }
+
+    // Кирпичная кладка (видна там, где отвалилась плитка).
+    static Texture2D MakeBrick()
+    {
+        const int size = 128;
+        var tex = NewTex(size);
+        const int rows = 8, cols = 4;
+        float bw = size / (float)cols, bh = size / (float)rows;
+        for (int y = 0; y < size; y++)
+        {
+            int row = (int)(y / bh);
+            float offset = (row % 2) * bw * 0.5f;
+            for (int x = 0; x < size; x++)
+            {
+                float fx = (x + offset) % size;
+                int col = (int)(fx / bw);
+                float lx = fx - col * bw, ly = y - row * bh;
+                bool mortar = lx < 2f || ly < 2f;
+                float n = Fbm(x, y, size, 71, 4);
+                float tone = Hash(col, row, 64, 5);
+                Color c = mortar ? new Color(0.25f, 0.22f, 0.18f)
+                    : Color.Lerp(new Color(0.45f, 0.2f, 0.12f), new Color(0.62f, 0.33f, 0.2f), tone);
+                c *= 0.75f + n * 0.4f;
+                c.a = 1f;
+                tex.SetPixel(x, y, c);
+            }
+        }
         tex.Apply();
         return tex;
     }

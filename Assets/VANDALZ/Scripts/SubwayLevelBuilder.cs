@@ -24,9 +24,10 @@ public class SubwayLevelBuilder : MonoBehaviour
     FirstPersonController player;
     CameraRig rig;
 
-    Material matTiles, matFloor, matSide, matCeiling, matTactile, matRust, matWood, matMetal, matStripe, matUpper, matPoster, matSign;
+    Material matTiles, matFloor, matSide, matCeiling, matTactile, matRust, matWood, matMetal, matStripe, matUpper, matPoster, matSign, matBrick;
 
-    static readonly Color FogColor = new Color(0.035f, 0.045f, 0.06f);
+    static readonly Color FogColor = new Color(0.03f, 0.05f, 0.06f);
+    static readonly Color LampColor = new Color(1f, 0.8f, 0.52f); // тёплый янтарный свет
 
     void Awake()
     {
@@ -40,6 +41,7 @@ public class SubwayLevelBuilder : MonoBehaviour
         BuildStructure();
         BuildTrack();
         BuildDecor();
+        BuildRuin();
         BuildLights();
         BuildPlayer(new Vector3(0f, 0.05f, 1.5f));
         BuildGameplay();
@@ -57,10 +59,10 @@ public class SubwayLevelBuilder : MonoBehaviour
 
         RenderSettings.fog = true;
         RenderSettings.fogMode = FogMode.Exponential;
-        RenderSettings.fogDensity = 0.045f;
+        RenderSettings.fogDensity = 0.04f;
         RenderSettings.fogColor = FogColor;
         RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
-        RenderSettings.ambientLight = new Color(0.17f, 0.18f, 0.21f);
+        RenderSettings.ambientLight = new Color(0.11f, 0.16f, 0.18f); // бирюзовая темнота
         RenderSettings.reflectionIntensity = 0.12f; // не отражать небо в подземелье
         QualitySettings.pixelLightCount = 8;        // много ламп — пусть все светят попиксельно
     }
@@ -76,6 +78,7 @@ public class SubwayLevelBuilder : MonoBehaviour
         matRust = EnvTextures.Make("rust", EnvTextures.Rust, Color.white, Vector2.one, 0.3f);
         matWood = EnvTextures.Make("wood", EnvTextures.Wood, Color.white, Vector2.one, 0.1f);
         matPoster = EnvTextures.Make("poster", EnvTextures.Poster, Color.white, Vector2.one, 0.1f);
+        matBrick = EnvTextures.Make("brick", EnvTextures.Brick, Color.white, Vector2.one, 0.1f);
         matMetal = ProtoMaterials.Get(new Color(0.28f, 0.29f, 0.32f));
         matStripe = ProtoMaterials.Get(new Color(0.08f, 0.22f, 0.5f));
         matSign = ProtoMaterials.Get(new Color(0.06f, 0.12f, 0.32f));
@@ -211,6 +214,115 @@ public class SubwayLevelBuilder : MonoBehaviour
         exitLight.color = new Color(0.3f, 1f, 0.5f);
     }
 
+    readonly System.Random ruinRandom = new System.Random(42);
+    float R(float a, float b) => a + (float)ruinRandom.NextDouble() * (b - a);
+
+    // Разруха: отбитая плитка с кирпичом, обломки у стен, ржавый вагон в тоннеле.
+    void BuildRuin()
+    {
+        var rnd = ruinRandom;
+
+        // Пятна отбитой плитки.
+        Vector3[] patches =
+        {
+            new Vector3(-1f, 1.0f, 10.5f), new Vector3(1f, 3.6f, 4.5f), new Vector3(-1f, 4.2f, 14f),
+            new Vector3(1f, -1.5f, 13.5f), new Vector3(-1f, -2.5f, 18f), new Vector3(1f, 0.9f, 28.5f),
+            new Vector3(-1f, 3.8f, 24f), new Vector3(1f, 4.8f, 36f), new Vector3(-1f, 5.5f, 44f),
+        };
+        foreach (var p in patches)
+        {
+            float side = p.x;
+            Patch(new Vector3(side * (HalfW - 0.015f), p.y, p.z), new Vector3(-side, 0f, 0f), R(0.6f, 1.2f), matBrick, rnd);
+        }
+        Patch(new Vector3(2.5f, 1.6f, 31.95f), Vector3.back, 0.7f, matBrick, rnd);
+
+        // Обломки у стен и у края платформ.
+        for (int i = 0; i < 26; i++)
+        {
+            float z = R(0.5f, EndZ - 0.5f);
+            if (z > 11.6f && z < 20.4f) continue;              // не над пропастью
+            if (z > 31f && z < 33f) continue;                   // не у стены подъёма
+            if (z > 42f && z < 44.5f) continue;                 // не в турникетах
+            float side = rnd.NextDouble() > 0.5 ? 1f : -1f;
+            float floorY = z > 32f ? UpperY : 0f;
+            float s = R(0.12f, 0.35f);
+            var chunk = Block("Rubble", new Vector3(side * R(3.3f, 3.8f), floorY + s * 0.4f, z), new Vector3(s * R(0.8f, 1.6f), s, s * R(0.8f, 1.4f)),
+                rnd.NextDouble() > 0.5 ? matSide : matTiles, 1f, false, 0f, Face.All, decor);
+            chunk.transform.rotation = Quaternion.Euler(R(-20f, 20f), R(0f, 360f), R(-20f, 20f));
+        }
+
+        // Ржавый вагон, застрявший в тоннеле у правой стены пропасти (только декор — крыша ниже зоны падения).
+        var car = Block("TrainCar", new Vector3(2.55f, PitY + 1.05f, 16f), new Vector3(2.9f, 2.1f, 7.6f), matRust, 1.5f, true, 0f, Face.All, decor);
+        car.transform.rotation = Quaternion.Euler(0f, 0f, 4f);
+        var windowMat = Emissive(new Color(1f, 0.75f, 0.35f), 0.6f);
+        for (float z = 13.2f; z < 19f; z += 1.4f)
+        {
+            var w = Block("CarWindow", new Vector3(-1.46f, 0.25f, z - 16f), new Vector3(0.04f, 0.6f, 0.9f), windowMat, 1f, false, 0f, Face.All, car.transform);
+            w.transform.localPosition = new Vector3(-1.46f, 0.25f, z - 16f);
+        }
+        Block("CarStripe", new Vector3(-1.47f, -0.35f, 0f), new Vector3(0.03f, 0.18f, 7.4f), ProtoMaterials.Get(new Color(0.7f, 0.15f, 0.12f)), 1f, false, 0f, Face.All, car.transform)
+            .transform.localPosition = new Vector3(-1.47f, -0.35f, 0f);
+    }
+
+    // Неровное пятно (многоугольник с «рваным» краем) на стене — например, кирпич под отбитой плиткой.
+    void Patch(Vector3 center, Vector3 normal, float radius, Material mat, System.Random rnd)
+    {
+        const int n = 14;
+        Vector3 up = Mathf.Abs(normal.y) > 0.9f ? Vector3.forward : Vector3.up;
+        Vector3 right = Vector3.Cross(up, -normal).normalized;
+        up = Vector3.Cross(-normal, right).normalized * -1f;
+        var verts = new Vector3[n + 1];
+        var uvs = new Vector2[n + 1];
+        var norms = new Vector3[n + 1];
+        verts[0] = Vector3.zero;
+        for (int i = 0; i < n; i++)
+        {
+            float a = i * Mathf.PI * 2f / n;
+            float r = radius * (0.6f + (float)rnd.NextDouble() * 0.55f);
+            verts[i + 1] = (right * Mathf.Cos(a) + up * Mathf.Sin(a)) * r;
+        }
+        for (int i = 0; i <= n; i++)
+        {
+            Vector3 w = center + verts[i];
+            uvs[i] = new Vector2(Vector3.Dot(w, right), Vector3.Dot(w, up)) / 0.8f;
+            norms[i] = normal;
+        }
+        var tris = new int[n * 3];
+        for (int i = 0; i < n; i++)
+        {
+            int a = i + 1, b = (i + 1) % n + 1;
+            // Обе стороны — порядок обхода не важен.
+            tris[i * 3] = 0; tris[i * 3 + 1] = a; tris[i * 3 + 2] = b;
+        }
+        var mesh = new Mesh { name = "Patch", vertices = verts, uv = uvs, normals = norms };
+        var allTris = new int[tris.Length * 2];
+        for (int i = 0; i < tris.Length; i += 3)
+        {
+            allTris[i] = tris[i]; allTris[i + 1] = tris[i + 1]; allTris[i + 2] = tris[i + 2];
+            allTris[tris.Length + i] = tris[i]; allTris[tris.Length + i + 1] = tris[i + 2]; allTris[tris.Length + i + 2] = tris[i + 1];
+        }
+        mesh.triangles = allTris;
+        mesh.RecalculateBounds();
+        var go = new GameObject("BrokenTiles");
+        go.transform.SetParent(decor, false);
+        go.transform.position = center;
+        go.AddComponent<MeshFilter>().sharedMesh = mesh;
+        var mr = go.AddComponent<MeshRenderer>();
+        mr.sharedMaterial = PatchMaterial(mat);
+    }
+
+    // Плоские пятна — без контура (контур у плоской двусторонней фигуры даёт «рябь»).
+    Material patchMaterial;
+    Material PatchMaterial(Material source)
+    {
+        if (patchMaterial == null)
+        {
+            patchMaterial = new Material(source);
+            ProtoMaterials.SetOutline(patchMaterial, 0f, Color.black);
+        }
+        return patchMaterial;
+    }
+
     void BuildLights()
     {
         // Лампы дневного света по центру потолка. Две — неисправные (мигают и жужжат).
@@ -220,7 +332,7 @@ public class SubwayLevelBuilder : MonoBehaviour
             bool broken = Mathf.Abs(z - 18f) < 0.1f || Mathf.Abs(z - 28f) < 0.1f;
             Vector3 pos = new Vector3(0f, CeilY - 0.45f, z);
             Block("LampHousing", pos + Vector3.up * 0.06f, new Vector3(0.35f, 0.08f, 1.5f), matMetal, 1f, false);
-            var tube = Block("LampTube", pos, new Vector3(0.14f, 0.05f, 1.35f), Emissive(new Color(0.9f, 0.96f, 1f), 1.8f), 1f, false);
+            var tube = Block("LampTube", pos, new Vector3(0.14f, 0.05f, 1.35f), Emissive(LampColor, 1.8f), 1f, false);
 
             var lightGo = new GameObject("Lamp");
             lightGo.transform.SetParent(root, false);
@@ -228,14 +340,14 @@ public class SubwayLevelBuilder : MonoBehaviour
             var lamp = lightGo.AddComponent<Light>();
             lamp.type = LightType.Point;
             lamp.range = 10f;
-            lamp.color = new Color(0.86f, 0.93f, 1f);
-            lamp.intensity = 1.4f;
+            lamp.color = LampColor;
+            lamp.intensity = 1.7f;
 
             var flicker = lightGo.AddComponent<FlickerLight>();
             flicker.lamp = lamp;
             flicker.tube = tube.GetComponent<Renderer>();
             flicker.broken = broken;
-            flicker.baseIntensity = 1.4f;
+            flicker.baseIntensity = 1.7f;
         }
     }
 
@@ -274,6 +386,7 @@ public class SubwayLevelBuilder : MonoBehaviour
         player.cameraPivot = cam.transform;
 
         rig = cam.gameObject.AddComponent<CameraRig>();
+        cam.gameObject.AddComponent<VandalzPost>(); // свечение неона, цвет, виньетка, зерно
         rig.controller = player;
 
         // Инвентарь — до баллончика: PaintSpray берёт его в Awake.

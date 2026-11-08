@@ -157,10 +157,11 @@ public class SprayEffects : MonoBehaviour
         hand.localPosition = handBasePos;
         hand.localRotation = Quaternion.Euler(handBaseEuler);
 
-        Color glove = new Color(0.96f, 0.96f, 0.94f);
-        Color sleeve = new Color(0.12f, 0.12f, 0.16f);
+        // Игрок — дудл: зелёная рука-«сосиска» с толстым контуром.
+        Color glove = new Color(0.45f, 0.88f, 0.3f);
+        Color sleeve = new Color(0.4f, 0.82f, 0.27f);
 
-        // Рукав толстовки уходит за край экрана, кулак-дудл держит баллон.
+        // Рука уходит за край экрана, кулак-дудл держит баллон.
         Part(PrimitiveType.Cylinder, hand, new Vector3(0.05f, -0.1f, -0.2f), new Vector3(0.11f, 0.17f, 0.11f), sleeve).transform.localRotation = Quaternion.Euler(70f, 0f, 0f);
         Part(PrimitiveType.Sphere, hand, new Vector3(0.0f, -0.035f, -0.01f), new Vector3(0.105f, 0.09f, 0.11f), glove);
         Part(PrimitiveType.Sphere, hand, new Vector3(-0.035f, -0.005f, 0.035f), new Vector3(0.05f, 0.045f, 0.05f), glove); // большой палец
