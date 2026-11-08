@@ -1,135 +1,259 @@
 using UnityEngine;
 
-// Собирает прототип при запуске игры: коридор метро из примитивов, две платформы,
-// пропасть, финиш, игрока с камерой и баллончиком, правила уровня.
-// Ось Z — вдоль коридора. Пол платформ на высоте y = 0.
+// Собирает уровень «Станция «Заброшенная»» при запуске игры — всё из кода, без ассетов.
+//
+// Маршрут (ось Z — вдоль станции, ширина 8 м):
+//   A  z  0–12  стартовая платформа: тайник, баллоны, спот «СТАРТ»
+//      z 12–20  пропасть над путями (8 м): нужен воздушный баллон или полки на стенах
+//   B  z 20–32  средняя платформа: бродит Закрасчик
+//      z = 32   стена 3 м: нарисуй полки обычным баллоном и залезь
+//   C  z 32–46  верхний ярус (y = 3): спот «ВЕРХ», выход
+//
+// Атмосфера: туман, тусклый свет, мерцающие лампы, пыль, кафель с грязью, афиши.
 public class SubwayLevelBuilder : MonoBehaviour
 {
-    [Header("Размеры (метры)")]
-    public float corridorWidth = 6f;
-    public float corridorHeight = 5f;
-    public float startPlatformLength = 10f;
-    public float gapLength = 7f;
-    public float farPlatformLength = 10f;
-    public float pitDepth = 9f;
+    const float HalfW = 4f;      // половина ширины станции
+    const float CeilY = 7f;      // потолок
+    const float PitY = -6f;      // дно путей
+    const float UpperY = 3f;     // верхний ярус
+    const float EndZ = 46f;
 
-    static readonly Color Concrete = new Color(0.42f, 0.42f, 0.40f);
-    static readonly Color DarkConcrete = new Color(0.22f, 0.22f, 0.23f);
-    static readonly Color Tiles = new Color(0.62f, 0.66f, 0.60f);
-    static readonly Color Ceiling = new Color(0.30f, 0.30f, 0.32f);
-    static readonly Color SafetyYellow = new Color(0.95f, 0.8f, 0.1f);
-    static readonly Color Rust = new Color(0.35f, 0.22f, 0.15f);
-    static readonly Color FinishGreen = new Color(0.1f, 0.9f, 0.3f);
-
-    Transform levelRoot;
-    Transform cansRoot;
+    Transform root, decor, cansRoot;
     CanInventory inventory;
+    GameFlow flow;
+    FirstPersonController player;
+    CameraRig rig;
+
+    Material matTiles, matFloor, matSide, matCeiling, matTactile, matRust, matWood, matMetal, matStripe, matUpper, matPoster, matSign;
+
+    static readonly Color FogColor = new Color(0.035f, 0.045f, 0.06f);
 
     void Awake()
     {
-        levelRoot = new GameObject("Level").transform;
+        SetupAtmosphere();
+        root = new GameObject("Level").transform;
+        decor = new GameObject("Decor").transform;
+        decor.SetParent(root, false);
+        cansRoot = new GameObject("Cans").transform;
 
-        float w = corridorWidth;
-        float gapStart = startPlatformLength;
-        float farStart = gapStart + gapLength;
-        float farEnd = farStart + farPlatformLength;
-        float totalLength = farEnd;
-        float bottom = -pitDepth;
+        CreateMaterials();
+        BuildStructure();
+        BuildTrack();
+        BuildDecor();
+        BuildLights();
+        BuildPlayer(new Vector3(0f, 0.05f, 1.5f));
+        BuildGameplay();
+    }
 
-        // --- Платформы (высокие блоки, чтобы у пропасти были «стенки») ---
-        Box("StartPlatform", new Vector3(0, bottom / 2, startPlatformLength / 2), new Vector3(w, pitDepth, startPlatformLength), Concrete);
-        Box("FarPlatform", new Vector3(0, bottom / 2, farStart + farPlatformLength / 2), new Vector3(w, pitDepth, farPlatformLength), Concrete);
+    // ---------- Атмосфера ----------
 
-        // Жёлтые линии у края — без коллайдера, чисто визуально.
-        Box("EdgeLine_Start", new Vector3(0, 0.005f, gapStart - 0.25f), new Vector3(w, 0.01f, 0.3f), SafetyYellow, false);
-        Box("EdgeLine_Far", new Vector3(0, 0.005f, farStart + 0.25f), new Vector3(w, 0.01f, 0.3f), SafetyYellow, false);
+    void SetupAtmosphere()
+    {
+        // Отключаем «солнце» из стандартной сцены — мы под землёй.
+#pragma warning disable 618
+        foreach (var l in FindObjectsOfType<Light>())
+            if (l.type == LightType.Directional) l.enabled = false;
+#pragma warning restore 618
 
-        // --- Дно пропасти с рельсами (игрок исчезнет раньше, чем долетит) ---
-        Box("PitFloor", new Vector3(0, bottom - 0.5f, gapStart + gapLength / 2), new Vector3(w, 1f, gapLength), DarkConcrete);
-        Box("Rail_L", new Vector3(-0.75f, bottom + 0.1f, gapStart + gapLength / 2), new Vector3(0.12f, 0.2f, gapLength), Rust, false);
-        Box("Rail_R", new Vector3(0.75f, bottom + 0.1f, gapStart + gapLength / 2), new Vector3(0.12f, 0.2f, gapLength), Rust, false);
+        RenderSettings.fog = true;
+        RenderSettings.fogMode = FogMode.Exponential;
+        RenderSettings.fogDensity = 0.045f;
+        RenderSettings.fogColor = FogColor;
+        RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
+        RenderSettings.ambientLight = new Color(0.17f, 0.18f, 0.21f);
+        RenderSettings.reflectionIntensity = 0.12f; // не отражать небо в подземелье
+        QualitySettings.pixelLightCount = 8;        // много ламп — пусть все светят попиксельно
+    }
 
-        // --- Стены, торцы, потолок ---
-        float wallHeight = corridorHeight + pitDepth;
-        float wallCenterY = (corridorHeight + bottom) / 2;
-        Box("Wall_L", new Vector3(-w / 2 - 0.25f, wallCenterY, totalLength / 2), new Vector3(0.5f, wallHeight, totalLength + 1f), Tiles);
-        Box("Wall_R", new Vector3(w / 2 + 0.25f, wallCenterY, totalLength / 2), new Vector3(0.5f, wallHeight, totalLength + 1f), Tiles);
-        Box("Wall_Back", new Vector3(0, wallCenterY, -0.25f), new Vector3(w, wallHeight, 0.5f), Tiles);
-        Box("Wall_End", new Vector3(0, wallCenterY, totalLength + 0.25f), new Vector3(w, wallHeight, 0.5f), Tiles);
-        Box("Ceiling", new Vector3(0, corridorHeight + 0.25f, totalLength / 2), new Vector3(w + 1f, 0.5f, totalLength + 1f), Ceiling);
+    void CreateMaterials()
+    {
+        matTiles = EnvTextures.Make("tiles", EnvTextures.Tiles, Color.white, Vector2.one, 0.45f);
+        matFloor = EnvTextures.Make("floor", EnvTextures.Concrete, new Color(0.8f, 0.8f, 0.78f), Vector2.one, 0.15f);
+        matSide = EnvTextures.Make("side", EnvTextures.DarkConcrete, Color.white, Vector2.one, 0.1f);
+        matCeiling = EnvTextures.Make("ceiling", EnvTextures.DarkConcrete, new Color(0.6f, 0.6f, 0.65f), Vector2.one, 0.05f);
+        matUpper = EnvTextures.Make("upper", EnvTextures.Concrete, new Color(0.55f, 0.56f, 0.58f), Vector2.one, 0.1f);
+        matTactile = EnvTextures.Make("tactile", EnvTextures.Tactile, Color.white, Vector2.one, 0.3f);
+        matRust = EnvTextures.Make("rust", EnvTextures.Rust, Color.white, Vector2.one, 0.3f);
+        matWood = EnvTextures.Make("wood", EnvTextures.Wood, Color.white, Vector2.one, 0.1f);
+        matPoster = EnvTextures.Make("poster", EnvTextures.Poster, Color.white, Vector2.one, 0.1f);
+        matMetal = ProtoMaterials.Get(new Color(0.28f, 0.29f, 0.32f));
+        matStripe = ProtoMaterials.Get(new Color(0.08f, 0.22f, 0.5f));
+        matSign = ProtoMaterials.Get(new Color(0.06f, 0.12f, 0.32f));
+    }
 
-        // --- Колонны на платформах ---
-        foreach (float z in new[] { 3f, 7f, farStart + 3f, farStart + 7f })
-        foreach (float x in new[] { -w / 2 + 0.6f, w / 2 - 0.6f })
-            Box("Column", new Vector3(x, corridorHeight / 2, z), new Vector3(0.5f, corridorHeight, 0.5f), DarkConcrete);
+    // ---------- Конструкция ----------
 
-        // --- Свет ---
-        for (float z = 3f; z < totalLength; z += 6f)
+    void BuildStructure()
+    {
+        // Платформы: верх — бетонный пол, бока — тёмный бетон.
+        Platform("A", 0f, 12f, 0f, true, false);
+        Platform("B", 20f, 32f, 0f, true, false);
+        Platform("C", 32f, EndZ, UpperY, false, false);
+
+        // Дно путей.
+        Block("PitFloor", new Vector3(0f, PitY - 0.5f, 16f), new Vector3(HalfW * 2f, 1f, 8f), matSide, 2f);
+
+        // Боковые стены: кафель внизу, синяя полоса, бетон сверху.
+        float wallH = CeilY - PitY;
+        foreach (float side in new[] { -1f, 1f })
         {
-            var lightGo = new GameObject("Lamp");
-            lightGo.transform.SetParent(levelRoot, false);
-            lightGo.transform.position = new Vector3(0, corridorHeight - 0.6f, z);
-            var lamp = lightGo.AddComponent<Light>();
-            lamp.type = LightType.Point;
-            lamp.range = 12f;
-            lamp.intensity = 1.6f;
-            lamp.color = new Color(1f, 0.92f, 0.8f);
+            float x = side * (HalfW + 0.25f);
+            Block("Wall", new Vector3(x, (CeilY + PitY) * 0.5f, EndZ * 0.5f), new Vector3(0.5f, wallH, EndZ + 1f), matTiles, 1.2f, true, 6f);
+            float inner = side * (HalfW - 0.02f);
+            // Синяя полоса на уровне глаз и бетон под потолком (тонкие панели поверх кафеля).
+            Block("Stripe", new Vector3(inner, 1.35f, 6f), new Vector3(0.04f, 0.3f, 12f), matStripe, 1f, false);
+            Block("Stripe", new Vector3(inner, 1.35f, 26f), new Vector3(0.04f, 0.3f, 12f), matStripe, 1f, false);
+            Block("Stripe", new Vector3(inner, UpperY + 1.35f, 39f), new Vector3(0.04f, 0.3f, 14f), matStripe, 1f, false);
+            Block("UpperWall", new Vector3(inner, 5.9f, EndZ * 0.5f), new Vector3(0.04f, 2.2f, EndZ), matUpper, 3f, false, 6f);
         }
 
-        // --- Финиш ---
-        float finishZ = farEnd - 2.5f;
-        Box("FinishPad", new Vector3(0, 0.01f, finishZ), new Vector3(w, 0.02f, 3f), FinishGreen, false);
-        Box("FinishPost_L", new Vector3(-w / 2 + 0.3f, 1.5f, finishZ), new Vector3(0.2f, 3f, 0.2f), FinishGreen);
-        Box("FinishPost_R", new Vector3(w / 2 - 0.3f, 1.5f, finishZ), new Vector3(0.2f, 3f, 0.2f), FinishGreen);
-        Box("FinishBar", new Vector3(0, 3f, finishZ), new Vector3(w - 0.4f, 0.2f, 0.2f), FinishGreen, false);
+        // Торцы.
+        Block("BackWall", new Vector3(0f, CeilY * 0.5f, -0.25f), new Vector3(HalfW * 2f, CeilY, 0.5f), matTiles, 1.2f);
+        Block("EndWall", new Vector3(0f, (CeilY + UpperY) * 0.5f, EndZ + 0.25f), new Vector3(HalfW * 2f, CeilY - UpperY, 0.5f), matTiles, 1.2f);
+        // Стена подъёма на верхний ярус — кафель поверх бетона (по ней рисуют полки).
+        Block("ClimbWall", new Vector3(0f, UpperY * 0.5f, 31.97f), new Vector3(HalfW * 2f, UpperY, 0.06f), matTiles, 1.2f, false);
 
-        // --- Игрок ---
-        Vector3 spawn = new Vector3(0, 0.05f, 2f);
-        var player = BuildPlayer(spawn, out PaintSpray spray);
+        // Потолок и балки.
+        Block("Ceiling", new Vector3(0f, CeilY + 0.25f, EndZ * 0.5f), new Vector3(HalfW * 2f + 1f, 0.5f, EndZ + 1f), matCeiling, 4f, true, 6f);
+        for (float z = 2f; z < EndZ; z += 4f)
+            Block("Beam", new Vector3(0f, CeilY - 0.2f, z), new Vector3(HalfW * 2f, 0.4f, 0.35f), matSide, 2f, false);
 
-        // --- Правила ---
-        var game = gameObject.AddComponent<VandalzGame>();
-        game.player = player;
-        game.spray = spray;
-        game.spawnPosition = spawn;
-        game.spawnYaw = 0f;
-        game.killY = -4f;
-        game.finishZone = new Bounds(new Vector3(0, 1f, finishZ), new Vector3(w, 3f, 3f));
-
-        // --- Баллончики ---
-        cansRoot = new GameObject("Cans").transform;
-        inventory.pickupRoot = cansRoot;
-        game.inventory = inventory;
-        game.Restarted += ResetCans;
-        ResetCans();
+        // Трубы под потолком вдоль стен.
+        foreach (float side in new[] { -1f, 1f })
+        {
+            Pipe(new Vector3(side * 3.55f, 6.35f, EndZ * 0.5f), 0.13f, EndZ, matRust);
+            Pipe(new Vector3(side * 3.25f, 6.55f, EndZ * 0.5f), 0.07f, EndZ, matMetal);
+        }
     }
 
-    // Стартовый набор: в руке розовый обычный баллон, на стартовой платформе лежат
-    // голубой обычный и воздушный. Вызывается и при рестарте (R).
-    void ResetCans()
+    void Platform(string name, float z0, float z1, float topY, bool edgeAtEnd, bool unused)
     {
-        foreach (Transform child in cansRoot) Destroy(child.gameObject);
-        inventory.Clear();
-        inventory.Give(SprayCan.Regular(new Color(1f, 0.2f, 0.6f)));
+        float len = z1 - z0;
+        float depth = topY - PitY;
+        Vector3 center = new Vector3(0f, topY - depth * 0.5f, (z0 + z1) * 0.5f);
+        Vector3 size = new Vector3(HalfW * 2f, depth, len);
+        Block(name + "_Floor", center, size, matFloor, 3f, true, 6f, Face.Top);
+        Block(name + "_Sides", center, size, matSide, 2f, false, 6f, Face.Sides | Face.Bottom);
 
-        CanPickup.Spawn(SprayCan.Regular(new Color(0.2f, 0.9f, 1f)), new Vector3(-1.6f, 0f, 5.5f), Quaternion.identity, false, cansRoot);
-        CanPickup.Spawn(SprayCan.Air(), new Vector3(1.6f, 0f, 8f), Quaternion.identity, false, cansRoot);
+        // Жёлтая тактильная полоса у края над пропастью.
+        if (z0 > 0.1f && topY < 0.1f) Block(name + "_EdgeIn", new Vector3(0f, topY + 0.005f, z0 + 0.35f), new Vector3(HalfW * 2f, 0.01f, 0.6f), matTactile, 0.6f, false);
+        if (edgeAtEnd && z1 < 20.1f) Block(name + "_EdgeOut", new Vector3(0f, topY + 0.005f, z1 - 0.35f), new Vector3(HalfW * 2f, 0.01f, 0.6f), matTactile, 0.6f, false);
     }
 
-    FirstPersonController BuildPlayer(Vector3 spawn, out PaintSpray spray)
+    void BuildTrack()
+    {
+        // Шпалы и рельсы на дне пропасти, тусклая красная лампа — видна глубина.
+        for (float z = 12.3f; z < 20f; z += 0.7f)
+            Block("Sleeper", new Vector3(0f, PitY + 0.06f, z), new Vector3(2.6f, 0.12f, 0.26f), matWood, 1f, false);
+        foreach (float x in new[] { -0.75f, 0.75f })
+            Block("Rail", new Vector3(x, PitY + 0.2f, 16f), new Vector3(0.1f, 0.16f, 8f), matRust, 1f, false);
+        // Контактный рельс у стены.
+        Block("ThirdRail", new Vector3(-2.6f, PitY + 0.35f, 16f), new Vector3(0.18f, 0.12f, 8f), matMetal, 1f, false);
+
+        var warn = new GameObject("PitLight").AddComponent<Light>();
+        warn.transform.SetParent(root, false);
+        warn.transform.position = new Vector3(3.5f, PitY + 1.2f, 16f);
+        warn.type = LightType.Point;
+        warn.range = 9f;
+        warn.intensity = 1.6f;
+        warn.color = new Color(1f, 0.25f, 0.12f);
+        Block("PitLamp", new Vector3(3.9f, PitY + 1.2f, 16f), new Vector3(0.1f, 0.2f, 0.3f), Emissive(new Color(1f, 0.3f, 0.15f), 2f), 1f, false);
+    }
+
+    void BuildDecor()
+    {
+        // Колонны на платформах A и B.
+        foreach (float z in new[] { 3.5f, 9f, 23.5f, 28.5f })
+            foreach (float x in new[] { -2.6f, 2.6f })
+                Block("Column", new Vector3(x, CeilY * 0.5f, z), new Vector3(0.6f, CeilY, 0.6f), matTiles, 1.2f, true, 0f, Face.All, decor);
+
+        // Скамейки.
+        Bench(new Vector3(-3.35f, 0f, 6f), 90f);
+        Bench(new Vector3(3.35f, 0f, 25.5f), -90f);
+        Bench(new Vector3(3.35f, UpperY, 38f), -90f);
+
+        // Ящики и мусор (на ящик у стены подъёма удобно запрыгнуть).
+        Block("Crate", new Vector3(3.2f, 0.35f, 31.3f), new Vector3(0.8f, 0.7f, 0.8f), matWood, 1f, true, 0f, Face.All, decor);
+        Block("Crate", new Vector3(-3.3f, 0.3f, 21f), new Vector3(0.6f, 0.6f, 0.6f), matWood, 1f, true, 0f, Face.All, decor);
+        Block("Crate", new Vector3(-3.2f, UpperY + 0.4f, 44f), new Vector3(0.8f, 0.8f, 0.8f), matWood, 1f, true, 0f, Face.All, decor);
+
+        // Афиши на стенах.
+        Poster(new Vector3(-3.97f, 2.4f, 2.2f), 1f, -3f);
+        Poster(new Vector3(3.97f, 2.3f, 6.5f), -1f, 4f);
+        Poster(new Vector3(-3.97f, 2.5f, 26f), 1f, 2f);
+        Poster(new Vector3(3.97f, 2.4f, 30f), -1f, -5f);
+        Poster(new Vector3(3.97f, UpperY + 2.3f, 41.5f), -1f, 3f);
+
+        // Название станции.
+        StationSign(new Vector3(3.97f, 3.3f, 2.5f), -1f);
+        StationSign(new Vector3(-3.97f, 3.3f, 29.5f), 1f);
+
+        // Подсказки на колоннах (смотрят на игрока, идущего вперёд по +Z).
+        Hint(new Vector3(2.6f, 2.3f, 3.18f), "ЛКМ — рисовать\nE — взять баллон");
+        Hint(new Vector3(-2.6f, 2.3f, 8.68f), "Впереди пропасть!\nВоздушный баллон\nрисует мост");
+        Hint(new Vector3(2.6f, 2.3f, 23.18f), "Закрасчик стирает\nкраску. Не стой\nрядом с ним!");
+        Hint(new Vector3(0f, 2.5f, 31.9f), "Нарисуй полки обычным баллоном и залезь наверх");
+
+        // Выход: турникеты, табличка, зелёный свет.
+        for (float x = -3.3f; x <= 3.31f; x += 1.65f)
+        {
+            Block("Turnstile", new Vector3(x, UpperY + 0.5f, 43f), new Vector3(0.25f, 1f, 0.9f), matMetal, 1f, true, 0f, Face.All, decor);
+            Block("TurnstileTop", new Vector3(x, UpperY + 1.02f, 43f), new Vector3(0.3f, 0.04f, 0.95f), Emissive(new Color(0.2f, 1f, 0.4f), 0.8f), 1f, false);
+        }
+        Block("ExitSign", new Vector3(0f, UpperY + 3.2f, 45.9f), new Vector3(2.6f, 0.7f, 0.1f), Emissive(new Color(0.1f, 0.85f, 0.35f), 1.2f), 1f, false);
+        WorldText.Create(decor, "ВЫХОД", new Vector3(0f, UpperY + 3.2f, 45.83f), Quaternion.identity, 0.45f, Color.white);
+        var exitLight = new GameObject("ExitLight").AddComponent<Light>();
+        exitLight.transform.SetParent(root, false);
+        exitLight.transform.position = new Vector3(0f, UpperY + 2.5f, 44.8f);
+        exitLight.type = LightType.Point;
+        exitLight.range = 8f;
+        exitLight.intensity = 2.2f;
+        exitLight.color = new Color(0.3f, 1f, 0.5f);
+    }
+
+    void BuildLights()
+    {
+        // Лампы дневного света по центру потолка. Две — неисправные (мигают и жужжат).
+        int i = 0;
+        for (float z = 3f; z < EndZ; z += 5f, i++)
+        {
+            bool broken = Mathf.Abs(z - 18f) < 0.1f || Mathf.Abs(z - 28f) < 0.1f;
+            Vector3 pos = new Vector3(0f, CeilY - 0.45f, z);
+            Block("LampHousing", pos + Vector3.up * 0.06f, new Vector3(0.35f, 0.08f, 1.5f), matMetal, 1f, false);
+            var tube = Block("LampTube", pos, new Vector3(0.14f, 0.05f, 1.35f), Emissive(new Color(0.9f, 0.96f, 1f), 1.8f), 1f, false);
+
+            var lightGo = new GameObject("Lamp");
+            lightGo.transform.SetParent(root, false);
+            lightGo.transform.position = pos + Vector3.down * 0.3f;
+            var lamp = lightGo.AddComponent<Light>();
+            lamp.type = LightType.Point;
+            lamp.range = 10f;
+            lamp.color = new Color(0.86f, 0.93f, 1f);
+            lamp.intensity = 1.4f;
+
+            var flicker = lightGo.AddComponent<FlickerLight>();
+            flicker.lamp = lamp;
+            flicker.tube = tube.GetComponent<Renderer>();
+            flicker.broken = broken;
+            flicker.baseIntensity = 1.4f;
+        }
+    }
+
+    // ---------- Игрок ----------
+
+    void BuildPlayer(Vector3 spawn)
     {
         var playerGo = new GameObject("Player");
-        playerGo.layer = 2; // "Ignore Raycast": луч баллончика не попадает в самого игрока
+        playerGo.layer = PaintSpray.PlayerLayer; // луч баллончика не попадает в самого игрока
         playerGo.transform.position = spawn;
 
         var cc = playerGo.AddComponent<CharacterController>();
         cc.height = 1.8f;
         cc.radius = 0.3f; // граффити на стене выступает на 0.3 м — на нём должно хватать места встать
-        cc.center = new Vector3(0, 0.9f, 0);
+        cc.center = new Vector3(0f, 0.9f, 0f);
         cc.stepOffset = 0.35f;
         cc.slopeLimit = 50f;
 
-        // Камера: берём Main Camera из сцены, если есть, иначе создаём.
         Camera cam = Camera.main;
         if (cam == null)
         {
@@ -138,37 +262,252 @@ public class SubwayLevelBuilder : MonoBehaviour
             camGo.AddComponent<AudioListener>();
         }
         cam.transform.SetParent(playerGo.transform, false);
-        cam.transform.localPosition = new Vector3(0, 1.6f, 0);
+        cam.transform.localPosition = new Vector3(0f, 1.6f, 0f);
         cam.transform.localRotation = Quaternion.identity;
-        cam.nearClipPlane = 0.05f;
+        cam.nearClipPlane = 0.03f;
+        cam.farClipPlane = 90f;
         cam.fieldOfView = 75f;
+        cam.clearFlags = CameraClearFlags.SolidColor;
+        cam.backgroundColor = FogColor;
 
-        var fpc = playerGo.AddComponent<FirstPersonController>();
-        fpc.cameraPivot = cam.transform;
+        player = playerGo.AddComponent<FirstPersonController>();
+        player.cameraPivot = cam.transform;
+
+        rig = cam.gameObject.AddComponent<CameraRig>();
+        rig.controller = player;
 
         // Инвентарь — до баллончика: PaintSpray берёт его в Awake.
         inventory = playerGo.AddComponent<CanInventory>();
         inventory.cam = cam;
+        inventory.pickupRoot = cansRoot;
 
-        spray = playerGo.AddComponent<PaintSpray>();
+        var spray = playerGo.AddComponent<PaintSpray>();
         spray.cam = cam;
         spray.inventory = inventory;
-
-        // Подсказка, частицы, звук, баллончик в руке. Можно выключить — логика не пострадает.
         playerGo.AddComponent<SprayEffects>();
 
-        return fpc;
+        // Шаги.
+        int step = 0;
+        player.Footstep += () => ProcAudio.Play2D(ProcAudio.Footstep(step++), player.IsSprinting ? 0.55f : 0.4f, Random.Range(0.9f, 1.1f));
+        player.Jumped += () => ProcAudio.Play2D(ProcAudio.Jump, 0.35f, Random.Range(0.95f, 1.05f));
+
+        DustMotes.Create(playerGo.transform);
+
+        // Ход игры и интерфейс.
+        flow = gameObject.AddComponent<GameFlow>();
+        flow.player = player;
+        flow.spray = spray;
+        flow.inventory = inventory;
+        flow.cameraRig = rig;
+
+        var hud = gameObject.AddComponent<VandalzHUD>();
+        hud.flow = flow;
+        hud.spray = spray;
+        hud.inventory = inventory;
     }
 
-    GameObject Box(string name, Vector3 center, Vector3 size, Color color, bool collider = true)
+    // ---------- Игровые объекты ----------
+
+    void BuildGameplay()
     {
-        var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        flow.killY = PitY + 2.5f;
+        flow.finishZone = new Bounds(new Vector3(0f, UpperY + 1.5f, 44.8f), new Vector3(HalfW * 2f, 3f, 2.4f));
+        flow.checkpoints.Add(new GameFlow.Checkpoint { name = "старт", zone = new Bounds(new Vector3(0f, 1f, 6f), new Vector3(8f, 3f, 12f)), spawn = new Vector3(0f, 0.05f, 1.5f), yaw = 0f });
+        flow.checkpoints.Add(new GameFlow.Checkpoint { name = "за пропастью", zone = new Bounds(new Vector3(0f, 1f, 26f), new Vector3(8f, 3f, 12f)), spawn = new Vector3(-3.2f, 0.05f, 22f), yaw = 0f }); // вне досягаемости Закрасчика
+        flow.checkpoints.Add(new GameFlow.Checkpoint { name = "верхний ярус", zone = new Bounds(new Vector3(0f, UpperY + 1f, 39f), new Vector3(8f, 3f, 14f)), spawn = new Vector3(0f, UpperY + 0.05f, 33f), yaw = 0f });
+
+        // Тайники с краской.
+        PaintStash.Create(root, new Vector3(-3.2f, 0f, 1.4f), 90f);
+        PaintStash.Create(root, new Vector3(3.2f, 0f, 20.9f), -90f);
+        PaintStash.Create(root, new Vector3(-3.2f, UpperY, 34.5f), 90f);
+
+        // Споты для тегов.
+        TagSpot.Create(root, new Vector3(-HalfW + 0.02f, 2.1f, 6.8f), Vector3.right, new Vector2(2.4f, 1.4f), "СТАРТ");
+        TagSpot.Create(root, new Vector3(HalfW - 0.02f, 1.9f, 16f), Vector3.left, new Vector2(2.6f, 1.4f), "НАД ПУТЯМИ");
+        TagSpot.Create(root, new Vector3(-HalfW + 0.02f, UpperY + 2f, 39.5f), Vector3.right, new Vector2(2.4f, 1.4f), "ВЕРХ");
+
+        // Закрасчик на средней платформе.
+        PaintEater.Create(root, new Vector3(0f, 0f, 27f), new Vector2(-1.6f, 20.8f), new Vector2(1.6f, 31.2f), player, rig);
+
+        flow.Restarted += ResetCans;
+        ResetCans();
+    }
+
+    // Стартовый набор баллонов. Вызывается и при рестарте (R).
+    void ResetCans()
+    {
+        foreach (Transform child in cansRoot) Destroy(child.gameObject);
+        inventory.Clear();
+        inventory.Give(SprayCan.Regular(new Color(1f, 0.2f, 0.6f)));
+
+        CanPickup.Spawn(SprayCan.Regular(new Color(0.2f, 0.9f, 1f)), new Vector3(-3.35f, 0.5f, 6.6f), Quaternion.identity, false, cansRoot);
+        CanPickup.Spawn(SprayCan.Air(), new Vector3(2.9f, 0f, 10.6f), Quaternion.identity, false, cansRoot);
+        CanPickup.Spawn(SprayCan.Regular(new Color(1f, 0.85f, 0.1f)), new Vector3(3.35f, 0.5f, 25f), Quaternion.identity, false, cansRoot);
+    }
+
+    // ---------- Конструктор геометрии ----------
+
+    [System.Flags]
+    enum Face { PosX = 1, NegX = 2, PosZ = 4, NegZ = 8, Top = 16, Bottom = 32, Sides = 15, All = 63 }
+
+    // Коробка из своего меша: UV в метрах (tile — размер одного повтора текстуры), поэтому текстура
+    // не растягивается на больших объектах. chunk > 0 — режем по длине (Z) на куски, чтобы
+    // каждый кусок освещался ближайшими лампами.
+    GameObject Block(string name, Vector3 center, Vector3 size, Material mat, float tile,
+        bool collider = true, float chunk = 0f, Face faces = Face.All, Transform parent = null)
+    {
+        if (chunk > 0f && size.z > chunk * 1.5f)
+        {
+            int n = Mathf.CeilToInt(size.z / chunk);
+            float part = size.z / n;
+            GameObject first = null;
+            for (int i = 0; i < n; i++)
+            {
+                Vector3 c = new Vector3(center.x, center.y, center.z - size.z * 0.5f + part * (i + 0.5f));
+                Face f = faces;
+                if (i > 0) f &= ~Face.NegZ;        // внутренние торцы кусков не нужны
+                if (i < n - 1) f &= ~Face.PosZ;
+                var go = Block(name, c, new Vector3(size.x, size.y, part), mat, tile, collider, 0f, f, parent);
+                if (first == null) first = go;
+            }
+            return first;
+        }
+
+        var obj = new GameObject(name);
+        obj.transform.SetParent(parent != null ? parent : root, false);
+        obj.transform.position = center;
+
+        var mesh = new Mesh { name = name };
+        var verts = new System.Collections.Generic.List<Vector3>();
+        var norms = new System.Collections.Generic.List<Vector3>();
+        var uvs = new System.Collections.Generic.List<Vector2>();
+        var tris = new System.Collections.Generic.List<int>();
+        Vector3 h = size * 0.5f;
+
+        if ((faces & Face.PosX) != 0) AddFace(verts, norms, uvs, tris, center, h, tile, Vector3.right, Vector3.up);
+        if ((faces & Face.NegX) != 0) AddFace(verts, norms, uvs, tris, center, h, tile, Vector3.left, Vector3.up);
+        if ((faces & Face.PosZ) != 0) AddFace(verts, norms, uvs, tris, center, h, tile, Vector3.forward, Vector3.up);
+        if ((faces & Face.NegZ) != 0) AddFace(verts, norms, uvs, tris, center, h, tile, Vector3.back, Vector3.up);
+        if ((faces & Face.Top) != 0) AddFace(verts, norms, uvs, tris, center, h, tile, Vector3.up, Vector3.forward);
+        if ((faces & Face.Bottom) != 0) AddFace(verts, norms, uvs, tris, center, h, tile, Vector3.down, Vector3.forward);
+
+        mesh.SetVertices(verts);
+        mesh.SetNormals(norms);
+        mesh.SetUVs(0, uvs);
+        mesh.SetTriangles(tris, 0);
+        mesh.RecalculateBounds();
+        obj.AddComponent<MeshFilter>().sharedMesh = mesh;
+        obj.AddComponent<MeshRenderer>().sharedMaterial = mat;
+
+        if (collider)
+        {
+            var box = obj.AddComponent<BoxCollider>();
+            box.size = size;
+        }
+        return obj;
+    }
+
+    static void AddFace(System.Collections.Generic.List<Vector3> verts, System.Collections.Generic.List<Vector3> norms,
+        System.Collections.Generic.List<Vector2> uvs, System.Collections.Generic.List<int> tris,
+        Vector3 center, Vector3 h, float tile, Vector3 n, Vector3 v)
+    {
+        Vector3 u = Vector3.Cross(v, -n); // «вправо», если смотреть на грань снаружи
+        float hn = Mathf.Abs(n.x) * h.x + Mathf.Abs(n.y) * h.y + Mathf.Abs(n.z) * h.z;
+        float hu = Mathf.Abs(u.x) * h.x + Mathf.Abs(u.y) * h.y + Mathf.Abs(u.z) * h.z;
+        float hv = Mathf.Abs(v.x) * h.x + Mathf.Abs(v.y) * h.y + Mathf.Abs(v.z) * h.z;
+        int s = verts.Count;
+        Vector3[] corners =
+        {
+            n * hn - u * hu - v * hv,
+            n * hn + u * hu - v * hv,
+            n * hn + u * hu + v * hv,
+            n * hn - u * hu + v * hv,
+        };
+        foreach (var c in corners)
+        {
+            verts.Add(c);
+            norms.Add(n);
+            Vector3 w = center + c;
+            uvs.Add(new Vector2(Vector3.Dot(w, u) / tile, Vector3.Dot(w, v) / tile));
+        }
+        // По часовой стрелке, если смотреть снаружи, — лицевая сторона.
+        tris.Add(s); tris.Add(s + 3); tris.Add(s + 2);
+        tris.Add(s); tris.Add(s + 2); tris.Add(s + 1);
+    }
+
+    // Плоская картинка с UV 0..1 (афиши, таблички). normal — куда смотрит лицевая сторона.
+    GameObject Picture(string name, Vector3 center, Vector3 normal, float width, float height, Material mat, float tiltDeg)
+    {
+        var go = GameObject.CreatePrimitive(PrimitiveType.Quad);
         go.name = name;
-        go.transform.SetParent(levelRoot, false);
+        Destroy(go.GetComponent<Collider>());
+        go.transform.SetParent(decor, false);
         go.transform.position = center;
-        go.transform.localScale = size;
-        go.GetComponent<Renderer>().sharedMaterial = ProtoMaterials.Get(color);
-        if (!collider) Destroy(go.GetComponent<Collider>());
+        // Лицевая сторона Quad смотрит на -Z.
+        go.transform.rotation = Quaternion.LookRotation(-normal, Vector3.up) * Quaternion.Euler(0f, 0f, tiltDeg);
+        go.transform.localScale = new Vector3(width, height, 1f);
+        go.GetComponent<Renderer>().sharedMaterial = mat;
         return go;
+    }
+
+    void Poster(Vector3 pos, float facing, float tilt)
+    {
+        Picture("Poster", pos, new Vector3(facing, 0f, 0f), 1.05f, 1.55f, matPoster, tilt);
+    }
+
+    void StationSign(Vector3 pos, float facing)
+    {
+        Vector3 n = new Vector3(facing, 0f, 0f);
+        Picture("StationSign", pos, n, 3.2f, 0.6f, matSign, 0f);
+        WorldText.Create(decor, "ЗАБРОШЕННАЯ", pos + n * 0.02f, Quaternion.LookRotation(-n, Vector3.up), 0.32f, new Color(0.95f, 0.95f, 0.9f));
+    }
+
+    // Табличка-подсказка на колонне, смотрит на игрока (по -Z).
+    void Hint(Vector3 pos, string text)
+    {
+        var board = Picture("HintBoard", pos, Vector3.back, 1.5f, 0.75f, ProtoMaterials.Get(new Color(0.07f, 0.07f, 0.09f)), 0f);
+        board.transform.localScale = new Vector3(text.Length > 30 && !text.Contains("\n") ? 5.2f : 1.5f, 0.75f, 1f);
+        WorldText.Create(decor, text, pos + Vector3.back * 0.01f, Quaternion.identity, 0.13f, new Color(1f, 0.92f, 0.5f));
+    }
+
+    void Bench(Vector3 pos, float yaw)
+    {
+        var parent = new GameObject("Bench").transform;
+        parent.SetParent(decor, false);
+        parent.SetPositionAndRotation(pos, Quaternion.Euler(0f, yaw, 0f));
+        var seat = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        seat.transform.SetParent(parent, false);
+        seat.transform.localPosition = new Vector3(0f, 0.45f, 0f);
+        seat.transform.localScale = new Vector3(1.8f, 0.07f, 0.5f);
+        seat.GetComponent<Renderer>().sharedMaterial = matWood;
+        foreach (float x in new[] { -0.75f, 0.75f })
+        {
+            var leg = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            Destroy(leg.GetComponent<Collider>());
+            leg.transform.SetParent(parent, false);
+            leg.transform.localPosition = new Vector3(x, 0.21f, 0f);
+            leg.transform.localScale = new Vector3(0.06f, 0.42f, 0.45f);
+            leg.GetComponent<Renderer>().sharedMaterial = matMetal;
+        }
+    }
+
+    void Pipe(Vector3 center, float radius, float length, Material mat)
+    {
+        var go = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+        go.name = "Pipe";
+        Destroy(go.GetComponent<Collider>());
+        go.transform.SetParent(decor, false);
+        go.transform.position = center;
+        go.transform.rotation = Quaternion.Euler(90f, 0f, 0f);
+        go.transform.localScale = new Vector3(radius * 2f, length * 0.5f, radius * 2f);
+        go.GetComponent<Renderer>().sharedMaterial = mat;
+    }
+
+    static Material Emissive(Color color, float strength)
+    {
+        var m = new Material(ProtoMaterials.Get(color));
+        m.EnableKeyword("_EMISSION");
+        m.SetColor("_EmissionColor", color * strength);
+        return m;
     }
 }

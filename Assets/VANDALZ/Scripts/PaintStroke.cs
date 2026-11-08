@@ -17,6 +17,10 @@ public enum StrokeStyle
 // Когда мокрая плита проседает, вершины мазка опускаются вместе с ней.
 public class PaintStroke : MonoBehaviour
 {
+    // Все мазки на уровне (Закрасчик ищет по ним краску).
+    public static readonly HashSet<PaintStroke> All = new HashSet<PaintStroke>();
+    public bool IsErasing { get; private set; }
+
     public StrokeStyle Style { get; private set; }
     public bool Solid { get; private set; }
     public Color StrokeColor { get; private set; }
@@ -90,14 +94,57 @@ public class PaintStroke : MonoBehaviour
         Rebuild();
     }
 
+    void OnEnable() => All.Add(this);
+    void OnDisable() => All.Remove(this);
+
+    // Ближайшая к pos точка мазка (по точкам, без учёта ширины).
+    public Vector3 ClosestPoint(Vector3 pos)
+    {
+        Vector3 best = points.Count > 0 ? points[0] : transform.position;
+        float bestD = float.MaxValue;
+        for (int i = 0; i < points.Count; i++)
+        {
+            float d = (points[i] - pos).sqrMagnitude;
+            if (d < bestD) { bestD = d; best = points[i]; }
+        }
+        return best;
+    }
+
+    // Стереть мазок: он сереет и тает за duration секунд, потом исчезает вместе с коллайдерами.
+    public void Erase(float duration = 0.7f)
+    {
+        if (IsErasing) return;
+        IsErasing = true;
+        eraseStart = Time.time;
+        eraseDuration = duration;
+    }
+
+    float eraseStart, eraseDuration;
+
     public void AddSegment(PaintSpot spot) => segments.Add(spot);
     public void AddPad(PaintSpot spot) => pads.Add(spot);
 
     void Update()
     {
+        if (IsErasing)
+        {
+            float k = Mathf.Clamp01((Time.time - eraseStart) / eraseDuration);
+            StrokeColor = Color.Lerp(StrokeColor, new Color(0.45f, 0.45f, 0.47f), k);
+            eraseShrink = 1f - k;
+            Rebuild();
+            if (k >= 1f)
+            {
+                foreach (var s in segments) if (s != null) Destroy(s.gameObject);
+                foreach (var s in pads) if (s != null) Destroy(s.gameObject);
+                Destroy(gameObject);
+            }
+            return;
+        }
         // Пока краска мокрая — обновляем цвет, блеск и прогиб. Потом мазок статичен.
         if (Time.time - lastChangeTime <= dryTime + 0.2f) Rebuild();
     }
+
+    float eraseShrink = 1f; // при стирании мазок «сдувается»
 
     void OnDestroy()
     {
@@ -185,7 +232,7 @@ public class PaintStroke : MonoBehaviour
             for (int k = 0; k < 2; k++)
             {
                 P[k] = p0 + d0 * (k == 0 ? -half : half);
-                D[k] = d0; N[k] = normals[0]; W[k] = widths[0]; TI[k] = 0;
+                D[k] = d0; N[k] = normals[0]; W[k] = widths[0] * eraseShrink; TI[k] = 0;
             }
         }
         else
@@ -193,7 +240,7 @@ public class PaintStroke : MonoBehaviour
             for (int i = 0; i < n; i++)
             {
                 P[i] = points[i] + Vector3.down * SinkAt(i);
-                D[i] = DirectionAt(i); N[i] = normals[i]; W[i] = widths[i]; TI[i] = i;
+                D[i] = DirectionAt(i); N[i] = normals[i]; W[i] = widths[i] * eraseShrink; TI[i] = i;
             }
         }
 
@@ -292,7 +339,7 @@ public class PaintStroke : MonoBehaviour
 
         Vector3 dir = D[i], side = S[i], up = N[i];
         float roundness = bridge ? BridgeRoundness : WallRoundness;
-        float halfH = bridge ? Depth * 0.5f : Depth;
+        float halfH = (bridge ? Depth * 0.5f : Depth) * eraseShrink;
         // Центр сечения: у моста — середина толщины, у валика — чуть «утоплен» в стену, чтобы не было щели.
         Vector3 center = P[i] + dir * along + (bridge ? -up * halfH : -up * 0.01f);
 

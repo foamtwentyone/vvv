@@ -38,6 +38,8 @@ public class PaintSpray : MonoBehaviour
     public Camera cam;
 
     public CanInventory inventory;
+    // Выключается на заставке и финише.
+    public bool InputEnabled { get; set; } = true;
 
     [Header("Краска")]
     [Tooltip("При этой ширине краска тратится ровно 1 секунда запаса за 1 секунду")]
@@ -113,6 +115,8 @@ public class PaintSpray : MonoBehaviour
 
     // Появился новый кусок мазка: позиция, поворот, цвет (для облачка частиц).
     public event Action<Vector3, Quaternion, Color> SpotPlaced;
+    // Краска легла в точку (для спотов-тегов): позиция, нормаль поверхности, ширина, вид краски.
+    public static event Action<Vector3, Vector3, float, SprayMode> PaintApplied;
 
     struct Target
     {
@@ -166,7 +170,7 @@ public class PaintSpray : MonoBehaviour
         SprayCan can = CurrentCan;
         if (can != activeCan) { EndStroke(); activeCan = can; }
 
-        if (cam == null || Cursor.lockState != CursorLockMode.Locked || can == null)
+        if (cam == null || Cursor.lockState != CursorLockMode.Locked || can == null || !InputEnabled)
         {
             EndStroke();
             return;
@@ -501,6 +505,7 @@ public class PaintSpray : MonoBehaviour
         lastWidth = width;
         lastNormal = normal;
         SpotPlaced?.Invoke(pos, Quaternion.FromToRotation(Vector3.up, normal), strokeColor);
+        PaintApplied?.Invoke(pos, normal, width, strokeKind);
     }
 
     // ---------- Твёрдые куски (невидимые коллайдеры под мазком) ----------

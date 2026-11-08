@@ -1,69 +1,91 @@
 using UnityEngine;
 
-// «Ощущение» баллончика. Ничего не меняет в игровой логике, только показывает:
-//  - подсказку: полупрозрачную кляксу там, куда ляжет краска, и надпись под прицелом;
-//  - баллончик в руке (наклоняется и дрожит при распылении);
+// «Ощущение» баллончика. В игровую логику не вмешивается, только показывает:
+//  - подсказку: полупрозрачную кляксу там, куда ляжет краска;
+//  - руку-дудл с баллоном и её анимации: покачивание при ходьбе, инерция при повороте,
+//    прыжок/приземление, поза распыления, смена баллона, встряхивание (F);
 //  - струю краски и облачка (частицы);
-//  - шипение (звук генерируется кодом), «пустой» щелчок, когда краска кончилась;
-//  - лёгкую тряску камеры.
+//  - шипение, «кашель» пустеющего баллона, щелчок пустого, дребезг шарика;
+//  - лёгкую тряску камеры при распылении (через CameraRig).
 [RequireComponent(typeof(PaintSpray))]
 public class SprayEffects : MonoBehaviour
 {
     [Header("Подсказка")]
     public bool showPreview = true;
-    public bool showHint = true;
 
     [Header("Частицы")]
-    public float streamRate = 220f;   // частиц в секунду
-    public float streamSpeed = 14f;   // м/с
+    public float streamRate = 220f;
+    public float streamSpeed = 14f;
     public float streamSpread = 0.06f;
 
     [Header("Звук")]
     public float hissVolume = 0.35f;
 
     [Header("Тряска")]
-    public float cameraShake = 0.012f;
+    public float sprayShake = 0.06f;
 
     const int PlayerLayer = 2;
 
     PaintSpray spray;
+    FirstPersonController controller;
+    CameraRig rig;
     Transform camT;
-    Vector3 camBasePos;
 
     Transform ghost;
     Material ghostMaterial;
-    GUIStyle hintStyle;
 
-    Transform can, nozzle;
-    Renderer canCap, canBody;
-    Vector3 canBasePos;
-    Quaternion canBaseRot;
+    // Рука с баллоном.
+    Transform hand, can, nozzle, capTransform;
+    Renderer canCap, canBody, canStripe;
+    readonly Vector3 handBasePos = new Vector3(0.26f, -0.27f, 0.5f);
+    readonly Vector3 handBaseEuler = new Vector3(-6f, -14f, 4f);
+    Vector2 sway, swayVelocity;
+    float sprayPose;      // 0..1 — насколько рука в позе распыления
+    float sprintPose;
+    float kick, kickVelocity; // пружина прыжка/приземления
+    SprayCan shownCan;
+    float swapT = 1f;     // 0..1 анимация смены баллона
+    float shakeT = 1f;    // 0..1 анимация встряхивания
 
     ParticleSystem particles;
     float emitAccumulator;
 
-    AudioSource hissSource, clickSource;
+    AudioSource hissSource;
     float hissLevel;
 
     void Start()
     {
         spray = GetComponent<PaintSpray>();
+        controller = GetComponent<FirstPersonController>();
         if (spray.cam == null) { enabled = false; return; }
         camT = spray.cam.transform;
-        camBasePos = camT.localPosition;
+        rig = spray.cam.GetComponent<CameraRig>();
 
         BuildGhost();
-        BuildCan();
+        BuildHand();
         BuildParticles();
         BuildAudio();
 
         spray.SpotPlaced += OnSpotPlaced;
+        if (controller != null)
+        {
+            controller.Jumped += OnJumped;
+            controller.Landed += OnLanded;
+        }
     }
 
     void OnDestroy()
     {
         if (spray != null) spray.SpotPlaced -= OnSpotPlaced;
+        if (controller != null)
+        {
+            controller.Jumped -= OnJumped;
+            controller.Landed -= OnLanded;
+        }
     }
+
+    void OnJumped() => kickVelocity += 0.9f;
+    void OnLanded(float speed) => kickVelocity -= Mathf.Clamp(speed * 0.18f, 0.6f, 2.5f);
 
     void LateUpdate()
     {
@@ -72,25 +94,17 @@ public class SprayEffects : MonoBehaviour
         Color color = spray.CurrentColor;
 
         UpdateGhost(color, spraying);
-        UpdateCan(color, spraying, dt);
+        UpdateHand(color, spraying, dt);
         UpdateStream(color, spraying, dt);
         UpdateAudio(spraying, dt);
 
-        // Тряска камеры (только позиция, поворотом управляет контроллер).
-        Vector3 shake = Vector3.zero;
-        if (spraying)
-        {
-            float t = Time.time * 40f;
-            shake = new Vector3(Mathf.PerlinNoise(t, 0f) - 0.5f, Mathf.PerlinNoise(0f, t) - 0.5f, 0f) * (2f * cameraShake);
-        }
-        camT.localPosition = camBasePos + shake;
+        if (rig != null) rig.continuousShake = spraying ? sprayShake : 0f;
     }
 
     // ---------- Подсказка ----------
 
     void BuildGhost()
     {
-        // Квадрат 1×1 в плоскости XZ с текстурой кляксы.
         var mesh = new Mesh { name = "SprayGhost" };
         mesh.vertices = new[]
         {
@@ -118,73 +132,56 @@ public class SprayEffects : MonoBehaviour
         if (!visible) return;
 
         Vector3 n = spray.PreviewNormal;
-        ghost.SetPositionAndRotation(spray.PreviewPosition + n * 0.045f, Quaternion.FromToRotation(Vector3.up, n));
-        ghost.localScale = Vector3.one * (spray.PreviewWidth * 1.2f);
+        // Клякса медленно вращается — видно, что это подсказка, а не краска.
+        ghost.SetPositionAndRotation(spray.PreviewPosition + n * 0.045f,
+            Quaternion.FromToRotation(Vector3.up, n) * Quaternion.Euler(0f, Time.time * 40f, 0f));
+        float pulse = 1f + 0.06f * Mathf.Sin(Time.time * 5f);
+        ghost.localScale = Vector3.one * (spray.PreviewWidth * 1.2f * pulse);
 
         Color c;
         if (spray.PreviewBlocked) c = new Color(0.6f, 0.6f, 0.6f, 0.25f);
         else
         {
             c = color;
-            // Пока не рисуем — заметная подсказка; при распылении еле видна, чтобы не мешала.
-            c.a = spraying ? 0.2f : 0.5f;
+            c.a = spraying ? 0.18f : 0.5f;
         }
         ghostMaterial.color = c;
     }
 
-    void OnGUI()
+    // ---------- Рука с баллоном ----------
+
+    void BuildHand()
     {
-        if (!showHint || spray == null || !spray.HasPreview) return;
-        if (hintStyle == null)
-            hintStyle = new GUIStyle(GUI.skin.label) { fontSize = 15, fontStyle = FontStyle.Bold, alignment = TextAnchor.UpperCenter };
+        hand = new GameObject("Hand").transform;
+        hand.SetParent(camT, false);
+        hand.localPosition = handBasePos;
+        hand.localRotation = Quaternion.Euler(handBaseEuler);
 
-        string text;
-        if (spray.PreviewBlocked) text = "тут стоишь ты";
-        else switch (spray.PreviewMode)
-        {
-            case SprayMode.Wall: text = "стена — объёмное граффити"; break;
-            case SprayMode.Air: text = "воздух — мост"; break;
-            case SprayMode.ExtendBridge: text = "продлить мост"; break;
-            case SprayMode.Surface: text = spray.PreviewNormal.y > 0f ? "пол — граффити" : "потолок — граффити"; break;
-            default:
-                // Этим баллоном сюда не нарисовать.
-                text = spray.CurrentCan != null && spray.CurrentCan.type == CanType.Air
-                    ? "воздушный — только в пустоту"
-                    : "обычный — только по стенам и полу";
-                break;
-        }
+        Color glove = new Color(0.96f, 0.96f, 0.94f);
+        Color sleeve = new Color(0.12f, 0.12f, 0.16f);
 
-        var r = new Rect(Screen.width / 2f - 200f, Screen.height / 2f + 14f, 400f, 24f);
-        Color old = GUI.color;
-        GUI.color = new Color(0f, 0f, 0f, 0.8f);
-        GUI.Label(new Rect(r.x + 1, r.y + 1, r.width, r.height), text, hintStyle);
-        Color c = spray.PreviewBlocked || spray.PreviewMode == SprayMode.None ? Color.gray : spray.CurrentColor;
-        c.a = 1f;
-        GUI.color = c;
-        GUI.Label(r, text, hintStyle);
-        GUI.color = old;
-    }
+        // Рукав толстовки уходит за край экрана, кулак-дудл держит баллон.
+        Part(PrimitiveType.Cylinder, hand, new Vector3(0.05f, -0.1f, -0.2f), new Vector3(0.11f, 0.17f, 0.11f), sleeve).transform.localRotation = Quaternion.Euler(70f, 0f, 0f);
+        Part(PrimitiveType.Sphere, hand, new Vector3(0.0f, -0.035f, -0.01f), new Vector3(0.105f, 0.09f, 0.11f), glove);
+        Part(PrimitiveType.Sphere, hand, new Vector3(-0.035f, -0.005f, 0.035f), new Vector3(0.05f, 0.045f, 0.05f), glove); // большой палец
 
-    // ---------- Баллончик в руке ----------
-
-    void BuildCan()
-    {
-        can = new GameObject("SprayCan").transform;
-        can.SetParent(camT, false);
-        canBasePos = new Vector3(0.23f, -0.24f, 0.45f);
-        canBaseRot = Quaternion.Euler(-8f, -12f, 0f);
-        can.localPosition = canBasePos;
-        can.localRotation = canBaseRot;
+        can = new GameObject("Can").transform;
+        can.SetParent(hand, false);
+        can.localPosition = new Vector3(0f, 0.02f, 0.02f);
 
         canBody = Part(PrimitiveType.Cylinder, can, new Vector3(0, 0, 0), new Vector3(0.07f, 0.1f, 0.07f), new Color(0.75f, 0.75f, 0.78f));
+        canStripe = Part(PrimitiveType.Cylinder, can, new Vector3(0, 0.03f, 0), new Vector3(0.072f, 0.025f, 0.072f), Color.white);
         canCap = Part(PrimitiveType.Cylinder, can, new Vector3(0, 0.12f, 0), new Vector3(0.06f, 0.025f, 0.06f), Color.white);
-        nozzle = Part(PrimitiveType.Cube, can, new Vector3(0, 0.15f, 0.02f), new Vector3(0.02f, 0.02f, 0.03f), new Color(0.1f, 0.1f, 0.1f)).transform;
+        capTransform = canCap.transform;
+        nozzle = Part(PrimitiveType.Cube, can, new Vector3(0, 0.152f, 0.02f), new Vector3(0.022f, 0.02f, 0.03f), new Color(0.1f, 0.1f, 0.1f)).transform;
+        // Указательный палец на распылителе.
+        Part(PrimitiveType.Sphere, can, new Vector3(0f, 0.175f, -0.005f), new Vector3(0.04f, 0.03f, 0.06f), glove);
     }
 
     Renderer Part(PrimitiveType type, Transform parent, Vector3 localPos, Vector3 localScale, Color color)
     {
         var go = GameObject.CreatePrimitive(type);
-        DestroyImmediate(go.GetComponent<Collider>()); // баллончик не должен ни с чем сталкиваться
+        DestroyImmediate(go.GetComponent<Collider>()); // рука ни с чем не сталкивается
         go.layer = PlayerLayer;
         go.transform.SetParent(parent, false);
         go.transform.localPosition = localPos;
@@ -195,23 +192,93 @@ public class SprayEffects : MonoBehaviour
         return r;
     }
 
-    void UpdateCan(Color color, bool spraying, float dt)
+    void ApplyCanLook(SprayCan held)
     {
-        // Нет баллона — нечего держать. Воздушный баллон — белый корпус, обычный — серебристый.
-        SprayCan held = spray.CurrentCan;
-        can.gameObject.SetActive(held != null);
         if (held == null) return;
-        canCap.sharedMaterial = ProtoMaterials.Get(color);
-        canBody.sharedMaterial = ProtoMaterials.Get(held.type == CanType.Air ? new Color(0.95f, 0.98f, 1f) : new Color(0.75f, 0.75f, 0.78f));
+        canCap.sharedMaterial = ProtoMaterials.Get(held.color);
+        canStripe.sharedMaterial = ProtoMaterials.Get(held.color);
+        canBody.sharedMaterial = ProtoMaterials.Get(held.type == CanType.Air ? new Color(0.95f, 0.98f, 1f) : new Color(0.72f, 0.72f, 0.76f));
+    }
 
-        // При распылении баллончик выдвигается вперёд, наклоняется к прицелу и дрожит.
-        Vector3 targetPos = spraying ? canBasePos + new Vector3(-0.04f, 0.04f, 0.05f) : canBasePos;
-        Quaternion targetRot = spraying ? Quaternion.Euler(-25f, -18f, 0f) : canBaseRot;
-        if (spraying) targetPos += Random.insideUnitSphere * 0.004f;
+    void UpdateHand(Color color, bool spraying, float dt)
+    {
+        SprayCan held = spray.CurrentCan;
 
-        float k = 1f - Mathf.Exp(-18f * dt);
-        can.localPosition = Vector3.Lerp(can.localPosition, targetPos, k);
-        can.localRotation = Quaternion.Slerp(can.localRotation, targetRot, k);
+        // Смена баллона: рука уходит вниз, баллон меняется в нижней точке, рука возвращается.
+        if (held != shownCan)
+        {
+            if (shownCan == null) { shownCan = held; ApplyCanLook(held); swapT = 0.5f; }
+            else if (swapT >= 1f) swapT = 0f;
+        }
+        if (swapT < 1f)
+        {
+            float before = swapT;
+            swapT = Mathf.Min(1f, swapT + dt / 0.35f);
+            if (before < 0.5f && swapT >= 0.5f) { shownCan = held; ApplyCanLook(held); }
+        }
+        can.gameObject.SetActive(shownCan != null);
+
+        // Встряхивание (F).
+        if (VandalzInput.ShakePressed() && shownCan != null && spray.InputEnabled && Cursor.lockState == CursorLockMode.Locked && shakeT >= 1f)
+        {
+            shakeT = 0f;
+            ProcAudio.Play2D(ProcAudio.Rattle, 0.7f);
+        }
+        if (shakeT < 1f) shakeT = Mathf.Min(1f, shakeT + dt / 0.6f);
+
+        float k = 1f - Mathf.Exp(-14f * dt);
+        sprayPose = Mathf.Lerp(sprayPose, spraying ? 1f : 0f, k);
+        sprintPose = Mathf.Lerp(sprintPose, controller != null && controller.IsSprinting && !spraying ? 1f : 0f, 1f - Mathf.Exp(-8f * dt));
+
+        // Инерция: рука отстаёт от поворота камеры (пружина).
+        Vector2 look = controller != null ? controller.LookDelta : Vector2.zero;
+        Vector2 swayTarget = Vector2.ClampMagnitude(-look * 0.004f, 0.05f);
+        swayVelocity += (swayTarget - sway) * 160f * dt - swayVelocity * 14f * dt;
+        sway += swayVelocity * dt;
+
+        // Пружина прыжка/приземления.
+        kickVelocity += (-kick * 90f - kickVelocity * 11f) * dt;
+        kick += kickVelocity * dt;
+
+        // Покачивание при ходьбе и «дыхание».
+        float bobW = controller != null && controller.IsGrounded ? Mathf.Clamp01(controller.HorizontalSpeed / controller.sprintSpeed) : 0f;
+        float phase = controller != null ? controller.StepPhase * Mathf.PI * 2f : 0f;
+        Vector3 bob = new Vector3(Mathf.Cos(phase) * 0.014f, -Mathf.Abs(Mathf.Sin(phase)) * 0.02f, 0f) * bobW;
+        float breathe = Mathf.Sin(Time.time * 1.6f) * 0.004f;
+
+        Vector3 pos = handBasePos + bob + new Vector3(sway.x, sway.y + breathe + kick * 0.05f, 0f);
+        Vector3 euler = handBaseEuler + new Vector3(-sway.y * 300f + kick * 8f, sway.x * 300f, -sway.x * 200f);
+
+        // Поза распыления: вперёд к прицелу, наклон, дрожь.
+        pos += new Vector3(-0.05f, 0.05f, 0.06f) * sprayPose;
+        euler += new Vector3(-20f, -6f, 0f) * sprayPose;
+        if (spraying) pos += Random.insideUnitSphere * 0.0025f;
+
+        // Бег: рука опущена и повёрнута.
+        pos += new Vector3(0.03f, -0.06f, -0.04f) * sprintPose;
+        euler += new Vector3(18f, -20f, 10f) * sprintPose;
+
+        // Смена баллона: опускаем руку вниз по дуге.
+        float swapDip = swapT < 1f ? Mathf.Sin(swapT * Mathf.PI) : 0f;
+        pos += new Vector3(0f, -0.3f, -0.05f) * swapDip;
+        euler += new Vector3(40f, 0f, 0f) * swapDip;
+
+        // Встряхивание: быстрые рывки вверх-вниз.
+        if (shakeT < 1f)
+        {
+            float env = Mathf.Sin(shakeT * Mathf.PI);
+            pos += new Vector3(0f, Mathf.Sin(shakeT * Mathf.PI * 14f) * 0.045f * env, 0f);
+            euler += new Vector3(Mathf.Sin(shakeT * Mathf.PI * 14f) * 12f * env, 0f, 0f);
+        }
+
+        // «Кашель» пустого баллона.
+        if (spray.IsSprayingEmpty) pos += Random.insideUnitSphere * 0.003f;
+
+        hand.localPosition = pos;
+        hand.localRotation = Quaternion.Euler(euler);
+
+        // Палец давит на распылитель.
+        capTransform.localPosition = new Vector3(0f, 0.12f - 0.006f * sprayPose, 0f);
     }
 
     // ---------- Частицы ----------
@@ -303,23 +370,16 @@ public class SprayEffects : MonoBehaviour
     void BuildAudio()
     {
         hissSource = gameObject.AddComponent<AudioSource>();
-        hissSource.clip = MakeHissClip();
+        hissSource.clip = ProcAudio.Hiss;
         hissSource.loop = true;
         hissSource.playOnAwake = false;
         hissSource.spatialBlend = 0f;
         hissSource.volume = 0f;
         hissSource.Play();
-
-        clickSource = gameObject.AddComponent<AudioSource>();
-        clickSource.clip = MakeEmptyClickClip();
-        clickSource.playOnAwake = false;
-        clickSource.spatialBlend = 0f;
-        clickSource.volume = 0.6f;
     }
 
     void UpdateAudio(bool spraying, float dt)
     {
-        // Быстрая атака, чуть более мягкое затухание.
         float target = spraying ? 1f : 0f;
         float speed = spraying ? 30f : 14f;
         hissLevel = Mathf.MoveTowards(hissLevel, target, speed * dt);
@@ -331,50 +391,8 @@ public class SprayEffects : MonoBehaviour
         hissSource.volume = vol;
         hissSource.pitch = Mathf.Lerp(0.85f, 1.05f, spray.Paint01);
 
-        // Нажал на пустой баллончик — щелчок.
+        // Нажал на пустой баллон — щелчок.
         if (spray.IsSprayingEmpty && VandalzInput.ClickPressed())
-        {
-            clickSource.pitch = Random.Range(0.9f, 1.1f);
-            clickSource.Play();
-        }
-    }
-
-    // ---------- Генерация ресурсов кодом ----------
-
-    static AudioClip MakeHissClip()
-    {
-        // Шипение = белый шум, у которого убраны низкие частоты.
-        const int rate = 44100;
-        int samples = rate * 2;
-        var data = new float[samples];
-        float prev = 0f, low = 0f;
-        for (int i = 0; i < samples; i++)
-        {
-            float white = Random.Range(-1f, 1f);
-            low += (white - low) * 0.05f;      // низкочастотная часть
-            float high = white - low;          // остаётся «ш-ш-ш»
-            prev += (high - prev) * 0.7f;      // чуть смягчаем самые резкие верха
-            data[i] = prev * 0.5f;
-        }
-        var clip = AudioClip.Create("SprayHiss", samples, 1, rate, false);
-        clip.SetData(data, 0);
-        return clip;
-    }
-
-    static AudioClip MakeEmptyClickClip()
-    {
-        // Короткий «пшик-щелчок»: два быстро затухающих всплеска шума.
-        const int rate = 44100;
-        int samples = rate / 6;
-        var data = new float[samples];
-        for (int i = 0; i < samples; i++)
-        {
-            float t = i / (float)rate;
-            float env = Mathf.Exp(-t * 90f) + 0.5f * Mathf.Exp(-Mathf.Max(0f, t - 0.07f) * 120f) * (t > 0.07f ? 1f : 0f);
-            data[i] = Random.Range(-1f, 1f) * env * 0.6f;
-        }
-        var clip = AudioClip.Create("SprayEmpty", samples, 1, rate, false);
-        clip.SetData(data, 0);
-        return clip;
+            ProcAudio.Play2D(ProcAudio.EmptyClick, 0.6f, Random.Range(0.9f, 1.1f));
     }
 }

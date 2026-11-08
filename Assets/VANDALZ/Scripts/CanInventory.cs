@@ -20,26 +20,49 @@ public class CanInventory : MonoBehaviour
     public bool IsFull => cans.Count >= maxSlots;
     // Баллон на уровне под прицелом (для подсказки «E — взять»).
     public CanPickup LookedAt { get; private set; }
+    // Тайник под прицелом (для подсказки «E — пополнить»).
+    public PaintStash LookedAtStash { get; private set; }
 
     public event Action Changed;
+    // Сообщение для интерфейса: текст и цвет.
+    public event Action<string, Color> Notify;
 
     readonly List<SprayCan> cans = new List<SprayCan>();
+
+    // Выключается на заставке и финише.
+    public bool InputEnabled { get; set; } = true;
 
     void Update()
     {
         LookedAt = null;
-        if (cam == null || Cursor.lockState != CursorLockMode.Locked) return;
+        LookedAtStash = null;
+        if (cam == null || Cursor.lockState != CursorLockMode.Locked || !InputEnabled) return;
 
         // Что под прицелом? (Игрок и краска не мешают.)
         int mask = ~((1 << PaintSpray.PlayerLayer) | (1 << PaintSpray.PaintLayer));
         if (Physics.Raycast(cam.transform.position, cam.transform.forward, out RaycastHit hit, pickupRange, mask, QueryTriggerInteraction.Ignore))
-            LookedAt = hit.collider.GetComponentInParent<CanPickup>();
-
-        if (LookedAt != null && !IsFull && VandalzInput.InteractPressed())
         {
-            Give(LookedAt.can);
-            Destroy(LookedAt.gameObject);
-            LookedAt = null;
+            LookedAt = hit.collider.GetComponentInParent<CanPickup>();
+            LookedAtStash = hit.collider.GetComponentInParent<PaintStash>();
+        }
+
+        if (VandalzInput.InteractPressed())
+        {
+            if (LookedAt != null && !IsFull)
+            {
+                SprayCan can = LookedAt.can;
+                Give(can);
+                Destroy(LookedAt.gameObject);
+                LookedAt = null;
+                ProcAudio.Play2D(ProcAudio.Pickup, 0.8f);
+                Notify?.Invoke(can.type == CanType.Air ? "Воздушный баллон! Рисует мосты над пустотой" : "Новый баллон", can.color);
+            }
+            else if (LookedAtStash != null)
+            {
+                if (cans.Count == 0) Notify?.Invoke("Сначала найди баллон", Color.gray);
+                else if (LookedAtStash.Refill(this)) Notify?.Invoke("Краска пополнена", new Color(1f, 0.7f, 0.3f));
+                else Notify?.Invoke("Баллоны и так полные", Color.gray);
+            }
         }
 
         if (Current != null && VandalzInput.DropPressed()) DropCurrent();
@@ -65,6 +88,7 @@ public class CanInventory : MonoBehaviour
     {
         if (index == Selected || index < 0 || index >= cans.Count) return;
         Selected = index;
+        ProcAudio.Play2D(ProcAudio.Swap, 0.6f);
         Changed?.Invoke();
     }
 
@@ -77,6 +101,7 @@ public class CanInventory : MonoBehaviour
 
     void DropCurrent()
     {
+        ProcAudio.Play2D(ProcAudio.Swap, 0.6f, 0.8f);
         SprayCan can = Current;
         cans.RemoveAt(Selected);
         Selected = Mathf.Clamp(Selected, 0, Mathf.Max(0, cans.Count - 1));

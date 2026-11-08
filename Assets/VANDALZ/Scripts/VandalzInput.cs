@@ -132,4 +132,16 @@ public static class VandalzInput
         return Input.mouseScrollDelta.y;
 #endif
     }
+
+    // Встряхнуть баллон (просто для красоты и звука).
+    public static bool ShakePressed()
+    {
+#if ENABLE_INPUT_SYSTEM
+        return Keyboard.current != null && Keyboard.current.fKey.wasPressedThisFrame;
+#else
+        return Input.GetKeyDown(KeyCode.F);
+#endif
+    }
+
+    public static bool PausePressed() => EscapePressed();
 }
