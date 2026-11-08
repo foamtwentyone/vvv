@@ -35,7 +35,7 @@ public class SprayEffects : MonoBehaviour
     GUIStyle hintStyle;
 
     Transform can, nozzle;
-    Renderer canCap;
+    Renderer canCap, canBody;
     Vector3 canBasePos;
     Quaternion canBaseRot;
 
@@ -113,7 +113,7 @@ public class SprayEffects : MonoBehaviour
 
     void UpdateGhost(Color color, bool spraying)
     {
-        bool visible = showPreview && spray.HasPreview;
+        bool visible = showPreview && spray.HasPreview && spray.PreviewMode != SprayMode.None;
         ghost.gameObject.SetActive(visible);
         if (!visible) return;
 
@@ -146,14 +146,19 @@ public class SprayEffects : MonoBehaviour
             case SprayMode.Air: text = "воздух — мост"; break;
             case SprayMode.ExtendBridge: text = "продлить мост"; break;
             case SprayMode.Surface: text = spray.PreviewNormal.y > 0f ? "пол — граффити" : "потолок — граффити"; break;
-            default: return;
+            default:
+                // Этим баллоном сюда не нарисовать.
+                text = spray.CurrentCan != null && spray.CurrentCan.type == CanType.Air
+                    ? "воздушный — только в пустоту"
+                    : "обычный — только по стенам и полу";
+                break;
         }
 
         var r = new Rect(Screen.width / 2f - 200f, Screen.height / 2f + 14f, 400f, 24f);
         Color old = GUI.color;
         GUI.color = new Color(0f, 0f, 0f, 0.8f);
         GUI.Label(new Rect(r.x + 1, r.y + 1, r.width, r.height), text, hintStyle);
-        Color c = spray.PreviewBlocked ? Color.gray : spray.CurrentColor;
+        Color c = spray.PreviewBlocked || spray.PreviewMode == SprayMode.None ? Color.gray : spray.CurrentColor;
         c.a = 1f;
         GUI.color = c;
         GUI.Label(r, text, hintStyle);
@@ -171,7 +176,7 @@ public class SprayEffects : MonoBehaviour
         can.localPosition = canBasePos;
         can.localRotation = canBaseRot;
 
-        Part(PrimitiveType.Cylinder, can, new Vector3(0, 0, 0), new Vector3(0.07f, 0.1f, 0.07f), new Color(0.75f, 0.75f, 0.78f));
+        canBody = Part(PrimitiveType.Cylinder, can, new Vector3(0, 0, 0), new Vector3(0.07f, 0.1f, 0.07f), new Color(0.75f, 0.75f, 0.78f));
         canCap = Part(PrimitiveType.Cylinder, can, new Vector3(0, 0.12f, 0), new Vector3(0.06f, 0.025f, 0.06f), Color.white);
         nozzle = Part(PrimitiveType.Cube, can, new Vector3(0, 0.15f, 0.02f), new Vector3(0.02f, 0.02f, 0.03f), new Color(0.1f, 0.1f, 0.1f)).transform;
     }
@@ -192,7 +197,12 @@ public class SprayEffects : MonoBehaviour
 
     void UpdateCan(Color color, bool spraying, float dt)
     {
+        // Нет баллона — нечего держать. Воздушный баллон — белый корпус, обычный — серебристый.
+        SprayCan held = spray.CurrentCan;
+        can.gameObject.SetActive(held != null);
+        if (held == null) return;
         canCap.sharedMaterial = ProtoMaterials.Get(color);
+        canBody.sharedMaterial = ProtoMaterials.Get(held.type == CanType.Air ? new Color(0.95f, 0.98f, 1f) : new Color(0.75f, 0.75f, 0.78f));
 
         // При распылении баллончик выдвигается вперёд, наклоняется к прицелу и дрожит.
         Vector3 targetPos = spraying ? canBasePos + new Vector3(-0.04f, 0.04f, 0.05f) : canBasePos;

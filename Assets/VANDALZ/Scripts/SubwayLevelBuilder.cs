@@ -22,6 +22,8 @@ public class SubwayLevelBuilder : MonoBehaviour
     static readonly Color FinishGreen = new Color(0.1f, 0.9f, 0.3f);
 
     Transform levelRoot;
+    Transform cansRoot;
+    CanInventory inventory;
 
     void Awake()
     {
@@ -93,6 +95,25 @@ public class SubwayLevelBuilder : MonoBehaviour
         game.spawnYaw = 0f;
         game.killY = -4f;
         game.finishZone = new Bounds(new Vector3(0, 1f, finishZ), new Vector3(w, 3f, 3f));
+
+        // --- Баллончики ---
+        cansRoot = new GameObject("Cans").transform;
+        inventory.pickupRoot = cansRoot;
+        game.inventory = inventory;
+        game.Restarted += ResetCans;
+        ResetCans();
+    }
+
+    // Стартовый набор: в руке розовый обычный баллон, на стартовой платформе лежат
+    // голубой обычный и воздушный. Вызывается и при рестарте (R).
+    void ResetCans()
+    {
+        foreach (Transform child in cansRoot) Destroy(child.gameObject);
+        inventory.Clear();
+        inventory.Give(SprayCan.Regular(new Color(1f, 0.2f, 0.6f)));
+
+        CanPickup.Spawn(SprayCan.Regular(new Color(0.2f, 0.9f, 1f)), new Vector3(-1.6f, 0f, 5.5f), Quaternion.identity, false, cansRoot);
+        CanPickup.Spawn(SprayCan.Air(), new Vector3(1.6f, 0f, 8f), Quaternion.identity, false, cansRoot);
     }
 
     FirstPersonController BuildPlayer(Vector3 spawn, out PaintSpray spray)
@@ -125,8 +146,13 @@ public class SubwayLevelBuilder : MonoBehaviour
         var fpc = playerGo.AddComponent<FirstPersonController>();
         fpc.cameraPivot = cam.transform;
 
+        // Инвентарь — до баллончика: PaintSpray берёт его в Awake.
+        inventory = playerGo.AddComponent<CanInventory>();
+        inventory.cam = cam;
+
         spray = playerGo.AddComponent<PaintSpray>();
         spray.cam = cam;
+        spray.inventory = inventory;
 
         // Подсказка, частицы, звук, баллончик в руке. Можно выключить — логика не пострадает.
         playerGo.AddComponent<SprayEffects>();

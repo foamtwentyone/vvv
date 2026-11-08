@@ -84,4 +84,52 @@ public static class VandalzInput
         return Input.GetKeyDown(KeyCode.R);
 #endif
     }
+
+    public static bool InteractPressed()
+    {
+#if ENABLE_INPUT_SYSTEM
+        return Keyboard.current != null && Keyboard.current.eKey.wasPressedThisFrame;
+#else
+        return Input.GetKeyDown(KeyCode.E);
+#endif
+    }
+
+    public static bool DropPressed()
+    {
+#if ENABLE_INPUT_SYSTEM
+        return Keyboard.current != null && Keyboard.current.gKey.wasPressedThisFrame;
+#else
+        return Input.GetKeyDown(KeyCode.G);
+#endif
+    }
+
+    // Нажатая цифра 1–4 как индекс слота (0–3), или -1.
+    public static int SlotPressed()
+    {
+#if ENABLE_INPUT_SYSTEM
+        var k = Keyboard.current;
+        if (k == null) return -1;
+        if (k.digit1Key.wasPressedThisFrame) return 0;
+        if (k.digit2Key.wasPressedThisFrame) return 1;
+        if (k.digit3Key.wasPressedThisFrame) return 2;
+        if (k.digit4Key.wasPressedThisFrame) return 3;
+        return -1;
+#else
+        if (Input.GetKeyDown(KeyCode.Alpha1)) return 0;
+        if (Input.GetKeyDown(KeyCode.Alpha2)) return 1;
+        if (Input.GetKeyDown(KeyCode.Alpha3)) return 2;
+        if (Input.GetKeyDown(KeyCode.Alpha4)) return 3;
+        return -1;
+#endif
+    }
+
+    // Прокрутка колёсика: > 0 — вверх, < 0 — вниз.
+    public static float Scroll()
+    {
+#if ENABLE_INPUT_SYSTEM
+        return Mouse.current != null ? Mouse.current.scroll.ReadValue().y : 0f;
+#else
+        return Input.mouseScrollDelta.y;
+#endif
+    }
 }

@@ -4,36 +4,42 @@ using UnityEngine;
 // Что сейчас под прицелом баллончика.
 public enum SprayMode
 {
-    None,
+    None,          // этим баллоном сюда рисовать нельзя (краска не тратится)
     Surface,       // пол / потолок: плоское граффити
     Wall,          // стена: объёмное граффити, выступает из стены — на него можно встать
     Air,           // пусто: твёрдый мост в воздухе
     ExtendBridge,  // прицел на мосту: мост продолжается вперёд
 }
 
-// Баллончик. Пока зажата ЛКМ, рисует МАЗОК (PaintStroke). Твёрдое — само граффити:
+// Баллончик в руке. Пока зажата ЛКМ, рисует МАЗОК (PaintStroke) краской текущего баллона
+// из инвентаря (CanInventory). Твёрдое — само граффити.
 //
+// Обычный баллон (CanType.Regular) — только по поверхностям:
 //  - пол / потолок ближе range  -> плоское граффити;
 //  - стена                      -> объёмное граффити, выступает из стены на wallDepth.
 //                                  Что нарисовал, то и получил: горизонтальная линия — полка,
 //                                  диагональ — пандус, зигзаг — ступеньки;
+//  - пусто                      -> ничего (краска не тратится).
+//
+// Воздушный баллон (CanType.Air) — только в пустоте:
 //  - пусто под прицелом         -> мост на уровне ног (луч пересекает уровень ног над пустотой);
 //                                  смотришь выше горизонта — мост плавно поднимается пандусом;
-//  - верх моста                 -> мост продолжается вперёд по взгляду.
+//  - верх моста                 -> мост продолжается вперёд по взгляду;
+//  - поверхность ближе          -> ничего.
 //
 // Краска лежит на отдельном слое PaintLayer. Луч для поверхностей проходит сквозь краску,
 // поэтому краска не «нарастает» на саму себя навстречу игроку.
 //
 // Ширина граффити зависит от дистанции (близко — узко), широкий мазок тратит больше краски.
 // Свежая краска мокрая: проседает под игроком и застывает за dryTime (PaintSpot).
-// Если подержать баллончик на одном месте стены, вниз стекает подтёк с каплей (DripRunner).
+// Если подержать обычный баллон на одном месте стены, вниз стекает подтёк с каплей (DripRunner).
 public class PaintSpray : MonoBehaviour
 {
     public Camera cam;
 
+    public CanInventory inventory;
+
     [Header("Краска")]
-    [Tooltip("Запас краски: столько секунд можно распылять мазком ширины referenceWidth")]
-    public float maxPaintSeconds = 10f;
     [Tooltip("При этой ширине краска тратится ровно 1 секунда запаса за 1 секунду")]
     public float referenceWidth = 0.6f;
 
@@ -88,8 +94,9 @@ public class PaintSpray : MonoBehaviour
     public const int PlayerLayer = 2; // встроенный "Ignore Raycast" — на нём игрок
     public const int PaintLayer = 8;  // первый свободный слой; в Tags & Layers можно назвать его "Paint"
 
-    public float Paint { get; private set; }
-    public float Paint01 => maxPaintSeconds > 0f ? Paint / maxPaintSeconds : 0f;
+    public SprayCan CurrentCan => inventory != null ? inventory.Current : null;
+    public float Paint => CurrentCan != null ? CurrentCan.paint : 0f;
+    public float Paint01 => CurrentCan != null ? CurrentCan.Fill01 : 0f;
     public bool IsSpraying { get; private set; }
     public bool IsSprayingEmpty { get; private set; }
     public int PieceCount { get; private set; }
@@ -102,20 +109,10 @@ public class PaintSpray : MonoBehaviour
     public float PreviewWidth => target.width;
     public bool PreviewBlocked { get; private set; }
     public Vector3 AimPoint => target.aim;
-    public Color CurrentColor => palette[(strokeActive ? strokeIndex - 1 : strokeIndex) % palette.Length];
+    public Color CurrentColor => CurrentCan != null ? CurrentCan.color : Color.gray;
 
     // Появился новый кусок мазка: позиция, поворот, цвет (для облачка частиц).
     public event Action<Vector3, Quaternion, Color> SpotPlaced;
-
-    static readonly Color[] palette =
-    {
-        new Color(1f, 0.2f, 0.6f),   // розовый
-        new Color(0.2f, 0.9f, 1f),   // голубой
-        new Color(1f, 0.85f, 0.1f),  // жёлтый
-        new Color(0.5f, 1f, 0.2f),   // кислотно-зелёный
-        new Color(1f, 0.45f, 0.1f),  // оранжевый
-        new Color(0.65f, 0.35f, 1f), // фиолетовый
-    };
 
     struct Target
     {
@@ -133,8 +130,8 @@ public class PaintSpray : MonoBehaviour
     Target target;
 
     Color strokeColor;
-    int strokeIndex;
     bool strokeActive;
+    SprayCan activeCan; // баллон, которым рисуем сейчас (сменили — мазок заканчивается)
 
     PaintStroke stroke;     // текущий кусок мазка (null — начать новый)
     SprayMode strokeKind;
@@ -152,8 +149,8 @@ public class PaintSpray : MonoBehaviour
 
     void Awake()
     {
-        Paint = maxPaintSeconds;
         controller = GetComponent<FirstPersonController>();
+        if (inventory == null) inventory = GetComponent<CanInventory>();
         // Краска не привязана к игроку, чтобы оставалась на месте.
         paintRoot = new GameObject("Paint").transform;
     }
@@ -166,30 +163,40 @@ public class PaintSpray : MonoBehaviour
 
         PressPaintUnderFeet();
 
-        if (cam == null || Cursor.lockState != CursorLockMode.Locked)
+        SprayCan can = CurrentCan;
+        if (can != activeCan) { EndStroke(); activeCan = can; }
+
+        if (cam == null || Cursor.lockState != CursorLockMode.Locked || can == null)
         {
             EndStroke();
             return;
         }
 
         Ray aim = new Ray(cam.transform.position, cam.transform.forward);
-        ComputeTarget(aim);
+        ComputeTarget(aim, can.type);
 
         bool held = VandalzInput.SprayHeld();
-        if (!held || Paint <= 0f)
+        if (!held || can.IsEmpty)
         {
             IsSprayingEmpty = held;
             EndStroke();
-            HasPreview = Paint > 0f;
+            HasPreview = !can.IsEmpty;
             return;
         }
 
-        if (!strokeActive) StartStroke();
+        HasPreview = true;
+        if (target.mode == SprayMode.None)
+        {
+            // Этим баллоном сюда не нарисовать — краска не тратится.
+            EndStroke();
+            return;
+        }
+
+        if (!strokeActive) StartStroke(can);
 
         IsSpraying = true;
-        HasPreview = true;
         // Широкий мазок тратит больше краски.
-        Paint = Mathf.Max(0f, Paint - Time.deltaTime * target.width / referenceWidth);
+        can.paint = Mathf.Max(0f, can.paint - Time.deltaTime * target.width / referenceWidth);
 
         // Резкий взмах мышью: прицел за кадр мог уйти далеко. Проходим путь между прошлым
         // и текущим положением прицела мелкими шагами — линия идёт ровно по траектории взмаха.
@@ -202,13 +209,15 @@ public class PaintSpray : MonoBehaviour
         {
             float f = k / (float)steps;
             var r = new Ray(Vector3.Lerp(prevAim.origin, aim.origin, f), Vector3.Slerp(prevAim.direction, aim.direction, f));
-            ComputeTarget(r);
+            ComputeTarget(r, can.type);
+            if (target.mode == SprayMode.None) { stroke = null; continue; } // промежуточная точка мимо — разрыв
             AddTarget(target, stepDt);
         }
         prevAim = aim;
         hasPrevAim = true;
 
         UpdateDrip();
+    }        UpdateDrip();
     }
 
     // Мокрая краска под ногами проседает.
@@ -219,12 +228,11 @@ public class PaintSpray : MonoBehaviour
         if (spot != null) spot.Press(Time.deltaTime);
     }
 
-    // Каждое нажатие ЛКМ — новый цвет.
-    void StartStroke()
+    // Новое нажатие ЛКМ — новый мазок цветом текущего баллона.
+    void StartStroke(SprayCan can)
     {
         strokeActive = true;
-        strokeColor = palette[strokeIndex % palette.Length];
-        strokeIndex++;
+        strokeColor = can.color;
         stroke = null;
     }
 
@@ -243,57 +251,16 @@ public class PaintSpray : MonoBehaviour
 
     // ---------- Куда целимся ----------
 
-    void ComputeTarget(Ray ray)
+    void ComputeTarget(Ray ray, CanType canType)
     {
         int surfaceMask = ~((1 << PlayerLayer) | (1 << PaintLayer));
-
         bool hasSurface = Physics.Raycast(ray, out RaycastHit sh, range, surfaceMask, QueryTriggerInteraction.Ignore);
-        bool hasPaint = Physics.Raycast(ray, out RaycastHit ph, range, 1 << PaintLayer, QueryTriggerInteraction.Ignore);
-
-        // «Уровень моста»: высота ног, а пока рисуем мост — высота его последней точки.
-        // Над пустотой мост ложится на этот уровень, а не туда, куда смотрит камера.
-        bool drawingBridge = strokeActive && stroke != null && strokeKind == SprayMode.Air && stroke.Count > 0;
-        float feetY = controller != null ? controller.transform.position.y : ray.origin.y - 1.6f;
-        float planeY = drawingBridge ? lastPos.y : feetY;
-        bool hasPlane = false;
-        float planeDist = 0f;
-        if (ray.direction.y < -0.01f)
-        {
-            planeDist = (planeY - ray.origin.y) / ray.direction.y;
-            hasPlane = planeDist > 0f && planeDist <= range;
-        }
 
         var t = new Target { mode = SprayMode.None };
 
-        // Прицел на верхе моста (и мост ближе поверхности) — продолжаем мост.
-        if (hasPaint && (!hasSurface || ph.distance <= sh.distance) && (!hasPlane || ph.distance <= planeDist + 0.1f)
-            && ph.normal.y > 0.5f && IsBridge(ph.collider))
+        if (canType == CanType.Regular)
         {
-            Vector3 along = Vector3.ProjectOnPlane(ray.direction, ph.normal);
-            if (along.sqrMagnitude > 0.01f)
-            {
-                t.mode = SprayMode.ExtendBridge;
-                t.normal = ph.normal;
-                t.width = airWidth;
-                t.anchor = ph.point;
-                t.hitStroke = ph.collider.GetComponent<PaintSpot>().Stroke;
-                t.pos = ph.point + along.normalized * (airWidth * growStep);
-                t.aim = ph.point;
-            }
-        }
-
-        // Луч пересекает уровень моста раньше, чем во что-то упирается (под ним пустота) — мост.
-        if (t.mode == SprayMode.None && hasPlane && (!hasSurface || sh.distance > planeDist + 0.05f))
-        {
-            t.mode = SprayMode.Air;
-            t.normal = Vector3.up;
-            t.width = airWidth;
-            t.pos = ray.origin + ray.direction * planeDist;
-            t.aim = t.pos;
-        }
-
-        if (t.mode == SprayMode.None)
-        {
+            // Обычный баллон: только поверхности.
             if (hasSurface)
             {
                 t.mode = Mathf.Abs(sh.normal.y) < 0.5f ? SprayMode.Wall : SprayMode.Surface;
@@ -304,17 +271,17 @@ public class PaintSpray : MonoBehaviour
             }
             else
             {
-                // Смотрим выше уровня моста и ни во что не попали: точка в airDistance по взгляду,
-                // не ниже уровня моста (при рисовании моста уклон всё равно ограничит SmoothBridge — получится пандус).
-                t.mode = SprayMode.Air;
-                t.normal = Vector3.up;
-                t.width = airWidth;
                 t.pos = ray.origin + ray.direction * airDistance;
-                if (drawingBridge) t.pos = new Vector3(t.pos.x, Mathf.Max(t.pos.y, planeY), t.pos.z);
+                t.normal = Vector3.up;
                 t.aim = t.pos;
             }
         }
+        else
+        {
+            ComputeAirTarget(ray, hasSurface, sh, ref t);
+        }
 
+        if (t.width <= 0f) t.width = canType == CanType.Air ? airWidth : minWidth;
         target = t;
 
         switch (t.mode)
@@ -332,6 +299,67 @@ public class PaintSpray : MonoBehaviour
                 PreviewBlocked = false; // граффити на полу ничему не мешает
                 break;
         }
+    }
+
+    // Воздушный баллон: мост над пустотой или продолжение моста.
+    void ComputeAirTarget(Ray ray, bool hasSurface, RaycastHit sh, ref Target t)
+    {
+        bool hasPaint = Physics.Raycast(ray, out RaycastHit ph, range, 1 << PaintLayer, QueryTriggerInteraction.Ignore);
+
+        // «Уровень моста»: высота ног, а пока рисуем мост — высота его последней точки.
+        // Над пустотой мост ложится на этот уровень, а не туда, куда смотрит камера.
+        bool drawingBridge = strokeActive && stroke != null && strokeKind == SprayMode.Air && stroke.Count > 0;
+        float feetY = controller != null ? controller.transform.position.y : ray.origin.y - 1.6f;
+        float planeY = drawingBridge ? lastPos.y : feetY;
+        bool hasPlane = false;
+        float planeDist = 0f;
+        if (ray.direction.y < -0.01f)
+        {
+            planeDist = (planeY - ray.origin.y) / ray.direction.y;
+            hasPlane = planeDist > 0f && planeDist <= range;
+        }
+
+        // Прицел на верхе моста (и мост ближе поверхности) — продолжаем мост.
+        if (hasPaint && (!hasSurface || ph.distance <= sh.distance) && (!hasPlane || ph.distance <= planeDist + 0.1f)
+            && ph.normal.y > 0.5f && IsBridge(ph.collider))
+        {
+            Vector3 along = Vector3.ProjectOnPlane(ray.direction, ph.normal);
+            if (along.sqrMagnitude > 0.01f)
+            {
+                t.mode = SprayMode.ExtendBridge;
+                t.normal = ph.normal;
+                t.width = airWidth;
+                t.anchor = ph.point;
+                t.hitStroke = ph.collider.GetComponent<PaintSpot>().Stroke;
+                t.pos = ph.point + along.normalized * (airWidth * growStep);
+                t.aim = ph.point;
+                return;
+            }
+        }
+
+        // Где встанет мост: пересечение с уровнем моста, а если смотрим выше —
+        // в airDistance по взгляду (не ниже уровня моста; уклон потом ограничит SmoothBridge).
+        float candidateDist;
+        Vector3 candidate;
+        if (hasPlane)
+        {
+            candidateDist = planeDist;
+            candidate = ray.origin + ray.direction * planeDist;
+        }
+        else
+        {
+            candidateDist = airDistance;
+            candidate = ray.origin + ray.direction * airDistance;
+            if (drawingBridge) candidate.y = Mathf.Max(candidate.y, planeY);
+        }
+
+        t.normal = Vector3.up;
+        t.width = airWidth;
+        t.pos = candidate;
+        t.aim = candidate;
+        // Если раньше упираемся в поверхность — воздушная краска туда не ложится.
+        t.mode = !hasSurface || sh.distance > candidateDist + 0.05f ? SprayMode.Air : SprayMode.None;
+        if (t.mode == SprayMode.None && hasSurface) { t.pos = sh.point; t.aim = sh.point; t.normal = sh.normal; }
     }
 
     static bool IsBridge(Collider c)
@@ -599,12 +627,11 @@ public class PaintSpray : MonoBehaviour
         return streak;
     }
 
-    // Стереть всю краску и заполнить баллончик (рестарт уровня).
+    // Стереть всю краску (рестарт уровня). Баллоны возвращает SubwayLevelBuilder.
     public void ResetPaint()
     {
         foreach (Transform child in paintRoot) Destroy(child.gameObject);
         PieceCount = 0;
-        Paint = maxPaintSeconds;
         EndStroke();
     }
 }
