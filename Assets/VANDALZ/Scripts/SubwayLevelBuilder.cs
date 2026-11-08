@@ -401,7 +401,10 @@ public class SubwayLevelBuilder : MonoBehaviour
 
         if (collider)
         {
+            // Центр задаём явно: Unity подгоняет коллайдер под меш, а у меша могут быть
+            // не все грани (например, только верх пола) — тогда коробка «уезжает».
             var box = obj.AddComponent<BoxCollider>();
+            box.center = Vector3.zero;
             box.size = size;
         }
         return obj;
