@@ -96,7 +96,7 @@ public class VandalzHUD : MonoBehaviour
         pulseStyle.fontSize = Mathf.RoundToInt(34 * pulse);
         Sticker(r, "КЛИКНИ, ЧТОБЫ НАЧАТЬ", Yellow, 2f, pulseStyle, Ink);
 
-        DrawControls(new Rect(W / 2 - 450, H * 0.74f, 900, 190));
+        DrawControls(new Rect(W / 2 - 520, H * 0.74f, 1040, 190));
     }
 
     void DrawControls(Rect r)
@@ -115,7 +115,7 @@ public class VandalzHUD : MonoBehaviour
         Fill(new Rect(0, 0, W, H), new Color(0f, 0f, 0f, 0.55f));
         Logo(new Rect(0, H * 0.22f, W, 160), "ПАУЗА", Time.unscaledTime, 120);
         Sticker(new Rect(W / 2 - 330, H * 0.42f, 660, 56), "кликни, чтобы продолжить   ·   R — заново", Cyan, -1.5f, smallCenter);
-        DrawControls(new Rect(W / 2 - 450, H * 0.55f, 900, 190));
+        DrawControls(new Rect(W / 2 - 520, H * 0.55f, 1040, 190));
     }
 
     void DrawFinish()

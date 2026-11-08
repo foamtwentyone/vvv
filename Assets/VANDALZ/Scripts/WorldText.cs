@@ -5,6 +5,24 @@ public static class WorldText
 {
     static Font font;
     static bool fontTried;
+    static Material material;
+
+    // Материал текста с проверкой глубины (свой шейдер). Если шейдера нет — встроенный материал шрифта.
+    static Material TextMaterial
+    {
+        get
+        {
+            if (material != null) return material;
+            if (Font == null) return null;
+            var shader = Shader.Find("VANDALZ/WorldText");
+            if (shader == null) shader = Resources.Load<Shader>("VandalzWorldText");
+            if (shader == null || !shader.isSupported) return material = Font.material;
+            material = new Material(shader) { mainTexture = Font.material.mainTexture };
+            // Атлас шрифта перестраивается, когда появляются новые буквы, — подхватываем новую текстуру.
+            Font.textureRebuilt += f => { if (f == font && material != null) material.mainTexture = f.material.mainTexture; };
+            return material;
+        }
+    }
 
     public static Font Font
     {
@@ -38,7 +56,7 @@ public static class WorldText
         if (Font != null)
         {
             tm.font = Font;
-            go.GetComponent<MeshRenderer>().sharedMaterial = Font.material;
+            go.GetComponent<MeshRenderer>().sharedMaterial = TextMaterial;
         }
         return tm;
     }

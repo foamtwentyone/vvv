@@ -58,7 +58,7 @@ public class PaintEater : MonoBehaviour
     // Игрока толкнули (для интерфейса: вспышка, сообщение).
     public static event Action PlayerHit;
 
-    Transform body, roller, rollerPivot;
+    Transform body, roller, rollerPivot, puddle;
     Vector3 patrolTarget;
     PaintStroke target;
     float scanTimer, chewTimer, hitCooldown, growlCooldown, eraseTimer;
@@ -92,7 +92,7 @@ public class PaintEater : MonoBehaviour
         // Тело — препятствие для игрока и цель для баллона (кинематика: двигаем сами).
         var col = go.AddComponent<CapsuleCollider>();
         col.center = new Vector3(0f, 1.5f, 0.1f);
-        col.radius = 0.55f;
+        col.radius = 0.7f;
         col.height = 3f;
         var rb = go.AddComponent<Rigidbody>();
         rb.isKinematic = true;
@@ -124,40 +124,42 @@ public class PaintEater : MonoBehaviour
         body.SetParent(transform, false);
 
         // Ноги: бедро на шарнире, голень на «колене».
-        legL = Joint(body, new Vector3(-0.24f, 1.15f, 0f));
-        legR = Joint(body, new Vector3(0.24f, 1.15f, 0f));
+        legL = Joint(body, new Vector3(-0.3f, 1.15f, 0f));
+        legR = Joint(body, new Vector3(0.3f, 1.15f, 0f));
         foreach (var leg in new[] { legL, legR })
         {
-            Part(PrimitiveType.Capsule, leg, new Vector3(0f, -0.3f, 0f), new Vector3(0.26f, 0.34f, 0.26f), paint);
+            Part(PrimitiveType.Capsule, leg, new Vector3(0f, -0.3f, 0f), new Vector3(0.4f, 0.36f, 0.4f), paint);
             var knee = Joint(leg, new Vector3(0f, -0.6f, 0f));
-            Part(PrimitiveType.Capsule, knee, new Vector3(0f, -0.28f, 0f), new Vector3(0.22f, 0.32f, 0.22f), paint);
-            Part(PrimitiveType.Sphere, knee, new Vector3(0f, -0.55f, 0.08f), new Vector3(0.3f, 0.14f, 0.4f), paint); // ступня-лужица
+            Part(PrimitiveType.Capsule, knee, new Vector3(0f, -0.28f, 0f), new Vector3(0.34f, 0.33f, 0.34f), paint);
+            Part(PrimitiveType.Sphere, knee, new Vector3(0f, -0.55f, 0.1f), new Vector3(0.45f, 0.16f, 0.55f), paint); // ступня-лужица
             if (leg == legL) kneeL = knee; else kneeR = knee;
         }
 
         // Туловище — сутулое, из нескольких наплывов краски.
-        Part(PrimitiveType.Capsule, body, new Vector3(0f, 1.6f, 0f), new Vector3(0.66f, 0.58f, 0.46f), paint).transform.localRotation = Quaternion.Euler(14f, 0f, 0f);
-        Part(PrimitiveType.Sphere, body, new Vector3(0f, 1.95f, 0.08f), new Vector3(0.82f, 0.62f, 0.56f), paint);
-        Part(PrimitiveType.Sphere, body, new Vector3(0.18f, 1.35f, 0.12f), new Vector3(0.4f, 0.45f, 0.35f), paint);
+        Part(PrimitiveType.Capsule, body, new Vector3(0f, 1.6f, 0f), new Vector3(1.0f, 0.64f, 0.72f), paint).transform.localRotation = Quaternion.Euler(14f, 0f, 0f);
+        Part(PrimitiveType.Sphere, body, new Vector3(0f, 1.98f, 0.1f), new Vector3(1.2f, 0.85f, 0.85f), paint);
+        Part(PrimitiveType.Sphere, body, new Vector3(0.12f, 1.35f, 0.18f), new Vector3(0.7f, 0.65f, 0.6f), paint);
+        Part(PrimitiveType.Sphere, body, new Vector3(-0.45f, 2.15f, -0.05f), new Vector3(0.45f, 0.45f, 0.45f), paint); // плечо-наплыв
+        Part(PrimitiveType.Sphere, body, new Vector3(0.5f, 2.12f, -0.05f), new Vector3(0.42f, 0.42f, 0.42f), paint);
 
         // Голова — бесформенный ком, наклонён вперёд.
-        head = Joint(body, new Vector3(0f, 2.35f, 0.18f));
-        Part(PrimitiveType.Sphere, head, new Vector3(0f, 0.25f, 0.05f), new Vector3(0.6f, 0.68f, 0.58f), paint);
-        Part(PrimitiveType.Sphere, head, new Vector3(-0.12f, 0.5f, -0.05f), new Vector3(0.32f, 0.3f, 0.3f), paint);
+        head = Joint(body, new Vector3(0f, 2.4f, 0.22f));
+        Part(PrimitiveType.Sphere, head, new Vector3(0f, 0.3f, 0.05f), new Vector3(0.88f, 0.88f, 0.8f), paint);
+        Part(PrimitiveType.Sphere, head, new Vector3(-0.15f, 0.65f, -0.05f), new Vector3(0.45f, 0.4f, 0.42f), paint);
 
         // Руки: одна поднята с валиком над головой, другая катит валик по полу.
-        armRaised = Joint(body, new Vector3(-0.46f, 2.05f, 0.05f));
+        armRaised = Joint(body, new Vector3(-0.62f, 2.1f, 0.05f));
         armRaised.localRotation = Quaternion.Euler(-150f, 0f, -10f);
-        Part(PrimitiveType.Capsule, armRaised, new Vector3(0f, -0.55f, 0f), new Vector3(0.18f, 0.58f, 0.18f), paint);
+        Part(PrimitiveType.Capsule, armRaised, new Vector3(0f, -0.55f, 0f), new Vector3(0.28f, 0.58f, 0.28f), paint);
         var topRoller = Joint(armRaised, new Vector3(0f, -1.15f, 0.05f));
         Part(PrimitiveType.Cube, topRoller, new Vector3(0.25f, 0f, 0f), new Vector3(0.5f, 0.05f, 0.05f), dark);
         var topDrum = Part(PrimitiveType.Cylinder, topRoller, new Vector3(0.55f, -0.05f, 0f), new Vector3(0.36f, 0.42f, 0.36f), paint).transform;
         topDrum.localRotation = Quaternion.Euler(0f, 0f, 90f);
 
-        armDown = Joint(body, new Vector3(0.48f, 2.0f, 0.05f));
+        armDown = Joint(body, new Vector3(0.64f, 2.05f, 0.05f));
         armDown.localRotation = Quaternion.Euler(-38f, 0f, 8f);
-        Part(PrimitiveType.Capsule, armDown, new Vector3(0f, -0.6f, 0f), new Vector3(0.18f, 0.62f, 0.18f), paint);
-        Part(PrimitiveType.Sphere, armDown, new Vector3(0f, -1.22f, 0f), new Vector3(0.24f, 0.24f, 0.24f), paint); // кисть
+        Part(PrimitiveType.Capsule, armDown, new Vector3(0f, -0.6f, 0f), new Vector3(0.28f, 0.62f, 0.28f), paint);
+        Part(PrimitiveType.Sphere, armDown, new Vector3(0f, -1.22f, 0f), new Vector3(0.36f, 0.34f, 0.36f), paint); // кисть
         // Ручка от кисти к валику у пола.
         Part(PrimitiveType.Cube, body, new Vector3(0.36f, 0.62f, 0.86f), new Vector3(0.05f, 0.7f, 0.05f), dark).transform.localRotation = Quaternion.Euler(20f, 0f, 0f);
         Part(PrimitiveType.Cube, body, new Vector3(0f, 0.27f, 1.0f), new Vector3(0.9f, 0.05f, 0.05f), dark);
@@ -167,25 +169,32 @@ public class PaintEater : MonoBehaviour
 
         // Глаза: разных размеров и цветов, по голове и груди.
         Color[] iris = { new Color(0.2f, 0.55f, 1f), new Color(1f, 0.85f, 0.15f), new Color(1f, 0.3f, 0.6f), new Color(0.4f, 1f, 0.35f), new Color(1f, 0.5f, 0.15f) };
-        AddEye(head, new Vector3(-0.15f, 0.3f, 0.31f), 0.17f, iris[0]);
-        AddEye(head, new Vector3(0.14f, 0.38f, 0.28f), 0.13f, iris[1]);
-        AddEye(head, new Vector3(0.03f, 0.12f, 0.33f), 0.11f, iris[2]);
-        AddEye(head, new Vector3(0.24f, 0.17f, 0.24f), 0.09f, iris[3]);
-        AddEye(head, new Vector3(-0.27f, 0.12f, 0.22f), 0.08f, iris[4]);
-        AddEye(head, new Vector3(-0.05f, 0.52f, 0.2f), 0.07f, iris[3]);
-        AddEye(body, new Vector3(0.2f, 2.0f, 0.36f), 0.1f, iris[1]);
-        AddEye(body, new Vector3(-0.22f, 1.82f, 0.33f), 0.08f, iris[2]);
-        AddEye(body, new Vector3(0.06f, 1.6f, 0.3f), 0.07f, iris[0]);
+        AddEye(head, new Vector3(-0.18f, 0.36f, 0.42f), 0.2f, iris[0]);
+        AddEye(head, new Vector3(0.19f, 0.46f, 0.39f), 0.16f, iris[1]);
+        AddEye(head, new Vector3(0.04f, 0.15f, 0.44f), 0.13f, iris[2]);
+        AddEye(head, new Vector3(0.33f, 0.2f, 0.33f), 0.11f, iris[3]);
+        AddEye(head, new Vector3(-0.36f, 0.15f, 0.3f), 0.1f, iris[4]);
+        AddEye(head, new Vector3(-0.06f, 0.66f, 0.32f), 0.09f, iris[3]);
+        AddEye(body, new Vector3(0.26f, 2.05f, 0.49f), 0.12f, iris[1]);
+        AddEye(body, new Vector3(-0.3f, 1.86f, 0.47f), 0.1f, iris[2]);
+        AddEye(body, new Vector3(0.08f, 1.45f, 0.46f), 0.09f, iris[0]);
 
         // Свисающие капли краски.
-        Hang(head, new Vector3(0.2f, 0f, 0.25f), 0.3f, 0.06f, paint);
-        Hang(head, new Vector3(-0.22f, -0.02f, 0.18f), 0.22f, 0.05f, paint);
-        Hang(body, new Vector3(0.3f, 1.62f, 0.25f), 0.35f, 0.07f, paint);
-        Hang(body, new Vector3(-0.28f, 1.5f, 0.2f), 0.28f, 0.06f, paint);
+        Hang(head, new Vector3(0.26f, -0.02f, 0.32f), 0.35f, 0.08f, paint);
+        Hang(head, new Vector3(-0.28f, -0.04f, 0.26f), 0.28f, 0.07f, paint);
+        Hang(body, new Vector3(0.42f, 1.62f, 0.35f), 0.42f, 0.09f, paint);
+        Hang(body, new Vector3(0.05f, 1.05f, 0.38f), 0.3f, 0.08f, paint);
+        Hang(body, new Vector3(-0.4f, 1.5f, 0.3f), 0.36f, 0.08f, paint);
         Hang(topRoller, new Vector3(0.4f, -0.2f, 0f), 0.5f, 0.06f, paint);
         Hang(topRoller, new Vector3(0.7f, -0.2f, 0f), 0.35f, 0.05f, paint);
         Hang(rollerPivot, new Vector3(0.25f, -0.15f, 0f), 0.12f, 0.05f, paint);
-        Hang(armDown, new Vector3(0.05f, -1.3f, 0f), 0.25f, 0.05f, paint);
+        Hang(armDown, new Vector3(0.05f, -1.35f, 0f), 0.3f, 0.07f, paint);
+
+        // Лужа серой краски под ногами — монстр «стекает».
+        var puddleMat = new Material(ProtoMaterials.Get(new Color(0.36f, 0.37f, 0.4f)));
+        ProtoMaterials.SetOutline(puddleMat, 0f, Color.black);
+        ProtoMaterials.SetHighlight(puddleMat, new Color(0.8f, 0.85f, 0.9f));
+        puddle = Part(PrimitiveType.Cylinder, transform, new Vector3(0f, 0.012f, 0.15f), new Vector3(1.9f, 0.006f, 1.7f), puddleMat).transform;
 
         rollSound = gameObject.AddComponent<AudioSource>();
         rollSound.clip = ProcAudio.EnemyRoll;
@@ -500,6 +509,9 @@ public class PaintEater : MonoBehaviour
             ? Quaternion.Euler(-120f + Mathf.Sin(t * 10f) * 15f, 0f, 25f)
             : Quaternion.Euler(-150f + Mathf.Sin(t * 1.4f) * 8f, 0f, -10f + Mathf.Sin(t * 0.8f) * 6f);
         armDown.localRotation = Quaternion.Euler(-38f + sw * 6f, 0f, 8f);
+
+        float pw = 1f + 0.06f * Mathf.Sin(t * 2.3f);
+        puddle.localScale = new Vector3(1.9f * pw, 0.006f, 1.7f / pw);
 
         // Нижний валик крутится по пройденному пути.
         rollAngle += moved / (0.18f * Mathf.PI * 2f) * 360f;
