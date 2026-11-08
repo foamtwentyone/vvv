@@ -1,9 +1,9 @@
 using UnityEngine;
 
 // «Ощущение» баллончика. Ничего не меняет в игровой логике, только показывает:
-//  - кольцо-подсказку там, где появится следующее пятно;
+//  - подсказку: полупрозрачную кляксу там, куда ляжет краска, и надпись под прицелом;
 //  - баллончик в руке (наклоняется и дрожит при распылении);
-//  - струю краски и облачко при появлении пятна (частицы);
+//  - струю краски и облачка (частицы);
 //  - шипение (звук генерируется кодом), «пустой» щелчок, когда краска кончилась;
 //  - лёгкую тряску камеры.
 [RequireComponent(typeof(PaintSpray))]
@@ -11,7 +11,7 @@ public class SprayEffects : MonoBehaviour
 {
     [Header("Подсказка")]
     public bool showPreview = true;
-    public float ringWidth = 0.035f;
+    public bool showHint = true;
 
     [Header("Частицы")]
     public float streamRate = 220f;   // частиц в секунду
@@ -24,14 +24,16 @@ public class SprayEffects : MonoBehaviour
     [Header("Тряска")]
     public float cameraShake = 0.012f;
 
-    const int RingSegments = 48;
     const int PlayerLayer = 2;
 
     PaintSpray spray;
     Transform camT;
     Vector3 camBasePos;
 
-    LineRenderer ring;
+    Transform ghost;
+    Material ghostMaterial;
+    GUIStyle hintStyle;
+
     Transform can, nozzle;
     Renderer canCap;
     Vector3 canBasePos;
@@ -50,8 +52,7 @@ public class SprayEffects : MonoBehaviour
         camT = spray.cam.transform;
         camBasePos = camT.localPosition;
 
-        Material unlit = MakeUnlitMaterial(null);
-        BuildRing(unlit);
+        BuildGhost();
         BuildCan();
         BuildParticles();
         BuildAudio();
@@ -70,7 +71,7 @@ public class SprayEffects : MonoBehaviour
         bool spraying = spray.IsSpraying;
         Color color = spray.CurrentColor;
 
-        UpdateRing(color, spraying);
+        UpdateGhost(color, spraying);
         UpdateCan(color, spraying, dt);
         UpdateStream(color, spraying, dt);
         UpdateAudio(spraying, dt);
@@ -87,58 +88,76 @@ public class SprayEffects : MonoBehaviour
 
     // ---------- Подсказка ----------
 
-    void BuildRing(Material unlit)
+    void BuildGhost()
     {
-        var go = new GameObject("SprayPreviewRing");
-        ring = go.AddComponent<LineRenderer>();
-        ring.sharedMaterial = unlit;
-        ring.useWorldSpace = false;
-        ring.loop = true;
-        ring.positionCount = RingSegments;
-        ring.widthMultiplier = ringWidth;
-        ring.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-        ring.receiveShadows = false;
-
-        SetRingSize(spray.PreviewWidth);
-    }
-
-    float ringDiameter = -1f;
-
-    // Окружность в локальной плоскости XZ, чуть выше верхней грани краски.
-    void SetRingSize(float diameter)
-    {
-        if (Mathf.Abs(diameter - ringDiameter) < 0.005f) return;
-        ringDiameter = diameter;
-        float r = diameter * 0.5f;
-        float y = spray.thickness * 0.5f + 0.015f;
-        for (int i = 0; i < RingSegments; i++)
+        // Квадрат 1×1 в плоскости XZ с текстурой кляксы.
+        var mesh = new Mesh { name = "SprayGhost" };
+        mesh.vertices = new[]
         {
-            float a = i * Mathf.PI * 2f / RingSegments;
-            ring.SetPosition(i, new Vector3(Mathf.Cos(a) * r, y, Mathf.Sin(a) * r));
-        }
+            new Vector3(-0.5f, 0f, -0.5f), new Vector3(0.5f, 0f, -0.5f),
+            new Vector3(-0.5f, 0f, 0.5f), new Vector3(0.5f, 0f, 0.5f),
+        };
+        mesh.uv = new[] { new Vector2(0, 0), new Vector2(1, 0), new Vector2(0, 1), new Vector2(1, 1) };
+        mesh.triangles = new[] { 0, 2, 1, 1, 2, 3 };
+        mesh.RecalculateBounds();
+
+        var go = new GameObject("SprayPreview");
+        go.AddComponent<MeshFilter>().sharedMesh = mesh;
+        var mr = go.AddComponent<MeshRenderer>();
+        ghostMaterial = new Material(PaintTextures.Blob);
+        mr.sharedMaterial = ghostMaterial;
+        mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        mr.receiveShadows = false;
+        ghost = go.transform;
     }
 
-    void UpdateRing(Color color, bool spraying)
+    void UpdateGhost(Color color, bool spraying)
     {
         bool visible = showPreview && spray.HasPreview;
-        ring.enabled = visible;
+        ghost.gameObject.SetActive(visible);
         if (!visible) return;
 
-        ring.transform.SetPositionAndRotation(spray.PreviewPosition, spray.PreviewRotation);
-        SetRingSize(spray.PreviewWidth); // ширина мазка зависит от дистанции
+        Vector3 n = spray.PreviewNormal;
+        ghost.SetPositionAndRotation(spray.PreviewPosition + n * 0.045f, Quaternion.FromToRotation(Vector3.up, n));
+        ghost.localScale = Vector3.one * (spray.PreviewWidth * 1.2f);
 
         Color c;
-        if (spray.PreviewBlocked) c = new Color(0.6f, 0.6f, 0.6f, 0.35f); // сюда нельзя — внутри игрока
+        if (spray.PreviewBlocked) c = new Color(0.6f, 0.6f, 0.6f, 0.25f);
         else
         {
             c = color;
-            c.a = spray.PreviewInAir ? 0.55f : 0.85f; // в воздухе — бледнее
+            // Пока не рисуем — заметная подсказка; при распылении еле видна, чтобы не мешала.
+            c.a = spraying ? 0.2f : 0.5f;
         }
-        ring.startColor = ring.endColor = c;
+        ghostMaterial.color = c;
+    }
 
-        // При распылении кольцо «пульсирует».
-        float pulse = spraying ? 1f + 0.35f * Mathf.Sin(Time.time * 30f) : 1f;
-        ring.widthMultiplier = ringWidth * pulse;
+    void OnGUI()
+    {
+        if (!showHint || spray == null || !spray.HasPreview) return;
+        if (hintStyle == null)
+            hintStyle = new GUIStyle(GUI.skin.label) { fontSize = 15, fontStyle = FontStyle.Bold, alignment = TextAnchor.UpperCenter };
+
+        string text;
+        if (spray.PreviewBlocked) text = "тут стоишь ты";
+        else switch (spray.PreviewMode)
+        {
+            case SprayMode.Wall: text = "стена — граффити + уступ"; break;
+            case SprayMode.Air: text = "воздух — мост"; break;
+            case SprayMode.ExtendBridge: text = "продлить мост"; break;
+            case SprayMode.Surface: text = spray.PreviewNormal.y > 0f ? "пол — граффити" : "потолок — граффити"; break;
+            default: return;
+        }
+
+        var r = new Rect(Screen.width / 2f - 200f, Screen.height / 2f + 14f, 400f, 24f);
+        Color old = GUI.color;
+        GUI.color = new Color(0f, 0f, 0f, 0.8f);
+        GUI.Label(new Rect(r.x + 1, r.y + 1, r.width, r.height), text, hintStyle);
+        Color c = spray.PreviewBlocked ? Color.gray : spray.CurrentColor;
+        c.a = 1f;
+        GUI.color = c;
+        GUI.Label(r, text, hintStyle);
+        GUI.color = old;
     }
 
     // ---------- Баллончик в руке ----------
@@ -217,7 +236,7 @@ public class SprayEffects : MonoBehaviour
         colorOverLife.color = g;
 
         var psRenderer = go.GetComponent<ParticleSystemRenderer>();
-        psRenderer.sharedMaterial = MakeUnlitMaterial(MakeSoftDot());
+        psRenderer.sharedMaterial = PaintTextures.Particle;
         psRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         psRenderer.receiveShadows = false;
 
@@ -260,7 +279,7 @@ public class SprayEffects : MonoBehaviour
         {
             Vector3 v = Vector3.ProjectOnPlane(Random.onUnitSphere, up).normalized * Random.Range(0.6f, 1.6f)
                         + up * Random.Range(0.1f, 0.5f);
-            p.position = pos + up * (spray.thickness * 0.5f);
+            p.position = pos + up * 0.03f;
             p.velocity = v;
             p.startLifetime = Random.Range(0.25f, 0.45f);
             p.startSize = Random.Range(0.1f, 0.2f);
@@ -311,32 +330,6 @@ public class SprayEffects : MonoBehaviour
     }
 
     // ---------- Генерация ресурсов кодом ----------
-
-    static Material MakeUnlitMaterial(Texture texture)
-    {
-        // "Sprites/Default" есть всегда, не требует света и учитывает цвет вершин
-        // (цвет кольца и частиц). Работает и в Built-in, и в URP.
-        Shader shader = Shader.Find("Sprites/Default");
-        var mat = shader != null ? new Material(shader) : new Material(ProtoMaterials.Get(Color.white));
-        if (texture != null) mat.mainTexture = texture;
-        return mat;
-    }
-
-    static Texture2D MakeSoftDot()
-    {
-        const int size = 32;
-        var tex = new Texture2D(size, size, TextureFormat.RGBA32, false) { wrapMode = TextureWrapMode.Clamp };
-        float half = size * 0.5f;
-        for (int y = 0; y < size; y++)
-        for (int x = 0; x < size; x++)
-        {
-            float d = Vector2.Distance(new Vector2(x + 0.5f, y + 0.5f), new Vector2(half, half)) / half;
-            float a = Mathf.Clamp01(1f - d);
-            tex.SetPixel(x, y, new Color(1f, 1f, 1f, a * a));
-        }
-        tex.Apply();
-        return tex;
-    }
 
     static AudioClip MakeHissClip()
     {

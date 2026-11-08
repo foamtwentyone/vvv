@@ -1,28 +1,32 @@
 using UnityEngine;
 
-// Подтёк краски на стене. Создаётся баллончиком, когда игрок долго держит его на одном месте стены.
-// Каждые dripInterval секунд стекает на dripStep вниз: рисует полоску по стене
-// и оставляет маленький уступ, по которому можно забираться.
+// Подтёк краски на стене. Создаётся баллончиком, когда игрок держит его на одном месте стены.
+// Каждые dripInterval секунд стекает на dripStep вниз: тянет по стене узкую полоску
+// (сужается книзу) и оставляет маленький уступ, по которому можно забираться.
 // Останавливается, когда кончилась стена, упёрся в пол или сделал dripMaxSteps шагов.
 public class DripRunner : MonoBehaviour
 {
     PaintSpray spray;
+    PaintStroke streak;
     Vector3 surfacePoint; // текущая точка на поверхности стены
-    Vector3 outward;      // нормаль стены (горизонтальная)
+    Vector3 outward;      // нормаль стены
     Color color;
-    float ledgeWidth;
     int steps;
     float timer;
-    int mask;
+    int solidMask;
 
-    public void Init(PaintSpray spray, Vector3 surfacePoint, Vector3 outward, Color color, float ledgeWidth)
+    const float Offset = 0.035f; // чуть над основным граффити
+
+    public void Init(PaintSpray spray, Vector3 surfacePoint, Vector3 outward, Color color)
     {
         this.spray = spray;
         this.surfacePoint = surfacePoint;
         this.outward = outward;
         this.color = color;
-        this.ledgeWidth = ledgeWidth;
-        mask = ~(1 << 2); // всё, кроме игрока
+        solidMask = ~((1 << PaintSpray.PlayerLayer) | (1 << PaintSpray.PaintLayer));
+
+        streak = spray.CreateLooseStroke(color);
+        streak.AddPoint(surfacePoint + outward * Offset, outward, spray.dripWidth);
     }
 
     void Update()
@@ -35,9 +39,8 @@ public class DripRunner : MonoBehaviour
 
         float step = spray.dripStep;
 
-        // Упёрлись в пол (или во что-то ещё, кроме краски) — стоп.
-        if (Physics.Raycast(surfacePoint + outward * 0.08f, Vector3.down, out RaycastHit floor, step + 0.05f, mask, QueryTriggerInteraction.Ignore)
-            && floor.collider.GetComponent<PaintSpot>() == null)
+        // Упёрлись в пол — стоп.
+        if (Physics.Raycast(surfacePoint + outward * 0.08f, Vector3.down, step + 0.05f, solidMask, QueryTriggerInteraction.Ignore))
         {
             Destroy(gameObject);
             return;
@@ -45,17 +48,19 @@ public class DripRunner : MonoBehaviour
 
         // Ниже ещё есть стена?
         Vector3 next = surfacePoint + Vector3.down * step;
-        if (!Physics.Raycast(next + outward * 0.3f, -outward, out RaycastHit wall, 0.6f, mask, QueryTriggerInteraction.Ignore))
+        if (!Physics.Raycast(next + outward * 0.3f, -outward, out RaycastHit wall, 0.6f, solidMask, QueryTriggerInteraction.Ignore))
         {
             Destroy(gameObject);
             return;
         }
-        if (wall.collider.GetComponent<PaintSpot>() == null) next = wall.point;
-
-        spray.CreateDripPiece(surfacePoint, next, outward, color, ledgeWidth);
-        surfacePoint = next;
+        next = wall.point;
 
         steps++;
+        float width = spray.dripWidth * Mathf.Lerp(1f, 0.5f, steps / (float)spray.dripMaxSteps); // сужается книзу
+        streak.AddPoint(next + outward * Offset, outward, width);
+        spray.CreateSmallLedge(next, outward, color, 0.3f);
+        surfacePoint = next;
+
         if (steps >= spray.dripMaxSteps) Destroy(gameObject);
     }
 }
