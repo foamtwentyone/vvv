@@ -1,56 +1,80 @@
 using System;
 using UnityEngine;
-using Random = UnityEngine.Random;
 
-// Баллончик. Пока зажата ЛКМ:
-//  - луч из центра камеры попал в поверхность ближе range  -> пятно на поверхности;
-//    если это стена (или бок другого пятна) — пятно торчит горизонтальным уступом;
-//  - луч ни во что не попал -> пятно застывает в воздухе в airDistance перед камерой.
-// Пятна сами имеют коллайдер, поэтому луч попадает и в них — мост «растёт» от краски:
-// попал в верх пятна -> новое пятно вплотную, в той же плоскости, чуть дальше по взгляду.
+// Баллончик. Пока зажата ЛКМ, рисует сплошной МАЗОК — ленту из плит, по которой можно ходить.
 //
-// Место будущего пятна считается каждый кадр (Preview*) — его рисует SprayEffects.
+// Куда ложится краска (луч из центра камеры):
+//  - пол / потолок ближе range        -> лента по поверхности;
+//  - стена                            -> горизонтальная полка, торчащая из стены;
+//                                        вертикальный мазок по стене = лестница уступов;
+//  - верх уже нарисованной краски     -> лента продолжается вперёд по взгляду (мост «растёт»);
+//  - пусто                            -> краска застывает в воздухе в airDistance перед камерой.
+//
+// Ширина мазка зависит от дистанции: близко — узко, далеко — широко, но и краски тратится больше.
+// Свежая краска мокрая: проседает под игроком и застывает за dryTime (см. PaintSpot).
+// Если долго держать баллончик на одном месте стены, вниз стекает подтёк (см. DripRunner).
 public class PaintSpray : MonoBehaviour
 {
     public Camera cam;
 
     [Header("Краска")]
-    [Tooltip("Запас краски в секундах распыления")]
+    [Tooltip("Запас краски: столько секунд можно распылять мазком ширины referenceWidth")]
     public float maxPaintSeconds = 10f;
 
     [Header("Луч")]
     public float range = 7f;
     public float airDistance = 3.5f;
 
-    [Header("Пятна")]
-    public float spotDiameter = 1.0f;
-    public float spotThickness = 0.12f;
-    [Tooltip("Не чаще одного пятна за столько секунд")]
-    public float spawnInterval = 0.04f;
-    [Tooltip("Новое пятно ставится, только если оно дальше этого от предыдущего")]
-    public float minSpacing = 0.35f;
-    [Tooltip("На сколько (в долях диаметра) мост вырастает вперёд, когда целишься в пятно")]
+    [Header("Ширина от дистанции")]
+    public float minWidth = 0.5f;
+    public float maxWidth = 1.4f;
+    public float nearDistance = 1f;
+    public float farDistance = 7f;
+    [Tooltip("При этой ширине краска тратится ровно 1 секунда запаса за 1 секунду")]
+    public float referenceWidth = 0.9f;
+
+    [Header("Мазок")]
+    public float thickness = 0.12f;
+    [Tooltip("Новая точка мазка — не ближе этого к предыдущей")]
+    public float minSegment = 0.2f;
+    [Tooltip("Если прицел прыгнул дальше этого — мазок рвётся и начинается заново")]
+    public float maxSegment = 1.2f;
+    [Tooltip("Шаг уступов, когда ведёшь баллончиком по стене вверх/вниз")]
+    public float ladderStep = 0.5f;
+    [Tooltip("На сколько (в долях ширины) мост вырастает вперёд, когда целишься в краску")]
     public float growStep = 0.4f;
+    [Tooltip("Угол поворота мазка, после которого ставится круглый стык")]
+    public float jointAngle = 15f;
+
+    [Header("Застывание")]
+    public float dryTime = 2.5f;
+    public float sinkSpeed = 0.6f;
+    public float maxSink = 0.7f;
+
+    [Header("Подтёки")]
+    [Tooltip("Сколько секунд держать баллончик на одном месте стены, чтобы потекло")]
+    public float dripDelay = 0.7f;
+    public float dripStep = 0.45f;
+    public float dripInterval = 0.3f;
+    public int dripMaxSteps = 5;
 
     public float Paint { get; private set; }
     public float Paint01 => maxPaintSeconds > 0f ? Paint / maxPaintSeconds : 0f;
     public bool IsSpraying { get; private set; }
-    // ЛКМ зажата, но краска кончилась — для «пустого» звука.
     public bool IsSprayingEmpty { get; private set; }
-    public int SpotCount { get; private set; }
+    public int PieceCount { get; private set; }
 
-    // Где появится следующее пятно (для подсказки).
+    // Где окажется краска прямо сейчас (для подсказки).
     public bool HasPreview { get; private set; }
-    public Vector3 PreviewPosition { get; private set; }
-    public Quaternion PreviewRotation { get; private set; }
-    public bool PreviewInAir { get; private set; }
+    public Vector3 PreviewPosition => target.pos;
+    public Quaternion PreviewRotation => Quaternion.FromToRotation(Vector3.up, target.up);
+    public float PreviewWidth => target.width;
+    public bool PreviewInAir => target.inAir;
     public bool PreviewBlocked { get; private set; }
-    // Куда летит краска (точка попадания луча или место пятна в воздухе).
     public Vector3 AimPoint { get; private set; }
-    // Цвет текущего мазка, а если не рисуем — цвет следующего.
     public Color CurrentColor => palette[(strokeActive ? strokeIndex - 1 : strokeIndex) % palette.Length];
 
-    // Вызывается при появлении каждого пятна: позиция, поворот, цвет.
+    // Появился новый кусок краски: позиция, поворот, цвет (для облачка частиц).
     public event Action<Vector3, Quaternion, Color> SpotPlaced;
 
     static readonly Color[] palette =
@@ -65,21 +89,45 @@ public class PaintSpray : MonoBehaviour
 
     const int PlayerLayer = 2; // встроенный слой "Ignore Raycast" — на нём игрок
 
-    Transform spotsRoot;
-    Material strokeMaterial;
+    // Точка мазка.
+    struct PaintPoint
+    {
+        public Vector3 pos;      // центр краски
+        public Vector3 up;       // «верх» плиты
+        public float width;
+        public bool inAir;
+        public bool onWall;      // полка на стене
+        public bool onPaint;     // луч попал в краску
+        public Vector3 surface;  // точка на стене (для полок и подтёков)
+        public Vector3 outward;  // нормаль стены
+    }
+
+    FirstPersonController controller;
+    Transform paintRoot;
+    int rayMask;
+
+    PaintPoint target;
+    Color strokeColor;
     int strokeIndex;
     bool strokeActive;
-    bool hasLastSpot;
-    Vector3 lastSpotPos;
-    float nextSpawnTime;
-    int rayMask;
+
+    bool hasLast;
+    PaintPoint last;
+    bool hasLastDir;
+    Vector3 lastDir;
+
+    bool dripAnchorValid;
+    Vector3 dripAnchor;
+    float dripStillTime;
+    bool dripSpawnedHere;
 
     void Awake()
     {
         Paint = maxPaintSeconds;
         rayMask = ~(1 << PlayerLayer);
-        // Пятна не привязаны к игроку, чтобы оставались на месте.
-        spotsRoot = new GameObject("PaintSpots").transform;
+        controller = GetComponent<FirstPersonController>();
+        // Краска не привязана к игроку, чтобы оставалась на месте.
+        paintRoot = new GameObject("Paint").transform;
     }
 
     void Update()
@@ -88,14 +136,15 @@ public class PaintSpray : MonoBehaviour
         IsSprayingEmpty = false;
         HasPreview = false;
 
-        bool locked = Cursor.lockState == CursorLockMode.Locked;
-        if (cam == null || !locked)
+        PressPaintUnderFeet();
+
+        if (cam == null || Cursor.lockState != CursorLockMode.Locked)
         {
             EndStroke();
             return;
         }
 
-        ComputePlacement();
+        ComputeTarget();
 
         bool held = VandalzInput.SprayHeld();
         if (!held || Paint <= 0f)
@@ -110,121 +159,256 @@ public class PaintSpray : MonoBehaviour
 
         IsSpraying = true;
         HasPreview = true;
-        Paint = Mathf.Max(0f, Paint - Time.deltaTime);
+        // Широкий мазок тратит больше краски.
+        Paint = Mathf.Max(0f, Paint - Time.deltaTime * target.width / referenceWidth);
 
-        if (Time.time >= nextSpawnTime) TryPlaceSpot();
+        AddPoint(target);
+        UpdateDrip();
     }
 
-    // Каждое нажатие ЛКМ — новый цвет, чтобы было видно отдельные «мазки».
+    // Мокрая краска под ногами проседает.
+    void PressPaintUnderFeet()
+    {
+        if (controller == null || controller.GroundCollider == null) return;
+        var spot = controller.GroundCollider.GetComponent<PaintSpot>();
+        if (spot != null) spot.Press(Time.deltaTime);
+    }
+
+    // Каждое нажатие ЛКМ — новый мазок и новый цвет.
     void StartStroke()
     {
         strokeActive = true;
-        strokeMaterial = ProtoMaterials.Get(palette[strokeIndex % palette.Length]);
+        strokeColor = palette[strokeIndex % palette.Length];
         strokeIndex++;
+        hasLast = false;
+        hasLastDir = false;
     }
 
     void EndStroke()
     {
         strokeActive = false;
-        hasLastSpot = false;
+        hasLast = false;
+        hasLastDir = false;
+        dripAnchorValid = false;
     }
 
-    // Считает, где и как встанет пятно, если распылить прямо сейчас.
-    void ComputePlacement()
+    float WidthForDistance(float distance)
+    {
+        return Mathf.Lerp(minWidth, maxWidth, Mathf.InverseLerp(nearDistance, farDistance, distance));
+    }
+
+    // Считает, куда ляжет краска, если распылять прямо сейчас.
+    void ComputeTarget()
     {
         Transform camT = cam.transform;
         Ray ray = new Ray(camT.position, camT.forward);
-
-        Vector3 pos;
-        Quaternion rot;
-        PreviewInAir = false;
+        var p = new PaintPoint();
 
         if (Physics.Raycast(ray, out RaycastHit hit, range, rayMask, QueryTriggerInteraction.Ignore))
         {
             AimPoint = hit.point;
             Vector3 n = hit.normal;
+            p.width = WidthForDistance(hit.distance);
+            p.onPaint = hit.collider.GetComponent<PaintSpot>() != null;
+            Vector3 along = Vector3.ProjectOnPlane(ray.direction, n);
+
             if (Mathf.Abs(n.y) < 0.5f)
             {
-                // Стена или бок пятна: горизонтальный уступ, выступающий из поверхности.
-                Vector3 outward = new Vector3(n.x, 0f, n.z).normalized;
-                pos = hit.point + outward * (spotDiameter * 0.5f - 0.05f);
-                rot = Quaternion.LookRotation(outward, Vector3.up);
+                // Стена (или бок краски): горизонтальная полка, выступающая из поверхности.
+                p.onWall = true;
+                p.outward = new Vector3(n.x, 0f, n.z).normalized;
+                p.surface = hit.point;
+                p.pos = hit.point + p.outward * (p.width * 0.5f - 0.05f);
+                p.up = Vector3.up;
             }
-            else if (n.y > 0.5f && hit.collider.GetComponent<PaintSpot>() != null
-                     && Vector3.ProjectOnPlane(ray.direction, n).sqrMagnitude > 0.01f)
+            else if (p.onPaint && n.y > 0.5f && along.sqrMagnitude > 0.01f)
             {
-                // Верх пятна: новое пятно в той же плоскости, сдвинутое по направлению взгляда.
-                // Так мост «растёт» вперёд от края краски, а не копится стопкой.
-                Vector3 along = Vector3.ProjectOnPlane(ray.direction, n).normalized;
-                pos = hit.point - n * (spotThickness * 0.5f) + along * (spotDiameter * growStep);
-                rot = Quaternion.LookRotation(along, n);
+                // Верх краски: продолжаем в той же плоскости чуть дальше по взгляду.
+                p.pos = hit.point - n * (thickness * 0.5f) + along.normalized * (p.width * growStep);
+                p.up = n;
             }
             else
             {
-                // Пол, потолок: плоское пятно по поверхности.
-                pos = hit.point + n * (spotThickness * 0.5f);
-                rot = Quaternion.FromToRotation(Vector3.up, n);
+                // Пол, потолок: лента лежит на поверхности.
+                p.pos = hit.point + n * (thickness * 0.5f);
+                p.up = n;
             }
         }
         else
         {
-            // Пусто: пятно застывает в воздухе, горизонтально, повёрнуто по взгляду.
-            pos = ray.origin + ray.direction * airDistance;
-            rot = Quaternion.Euler(0f, camT.eulerAngles.y, 0f);
-            AimPoint = pos;
-            PreviewInAir = true;
+            // Пусто: краска застывает в воздухе, горизонтально.
+            p.inAir = true;
+            p.width = WidthForDistance(airDistance);
+            p.pos = ray.origin + ray.direction * airDistance;
+            p.up = Vector3.up;
+            AimPoint = p.pos;
         }
 
-        PreviewPosition = pos;
-        PreviewRotation = rot;
-
-        // Не создаём пятно внутри игрока — иначе он застрянет.
-        // По высоте коробку чуть уменьшаем: пятно вровень с полом под ногами — это нормально.
-        Vector3 halfExtents = new Vector3(spotDiameter * 0.55f, spotThickness * 0.5f - 0.03f, spotDiameter * 0.55f);
-        PreviewBlocked = Physics.CheckBox(pos, halfExtents, rot, 1 << PlayerLayer, QueryTriggerInteraction.Ignore);
+        target = p;
+        PreviewBlocked = OverlapsPlayer(p.pos, PreviewRotation, new Vector3(p.width, thickness, p.width));
     }
 
-    void TryPlaceSpot()
+    // Добавляет точку к мазку: плита от предыдущей точки + стык на повороте.
+    void AddPoint(PaintPoint p)
     {
-        if (PreviewBlocked) return;
-        Vector3 pos = PreviewPosition;
-        if (hasLastSpot && (pos - lastSpotPos).sqrMagnitude < minSpacing * minSpacing) return;
+        if (!hasLast)
+        {
+            if (PlaceJoint(p)) { last = p; hasLast = true; hasLastDir = false; }
+            return;
+        }
 
-        // Случайный поворот вокруг нормали — чтобы пятна не выглядели одинаково.
-        Quaternion rot = PreviewRotation * Quaternion.Euler(0f, Random.Range(-25f, 25f), 0f);
-        float diameter = spotDiameter * Random.Range(0.9f, 1.1f);
+        Vector3 d = p.pos - last.pos;
+        float len = d.magnitude;
+        if (len < minSegment) return;
 
-        SpawnSpot(pos, rot, diameter);
-        lastSpotPos = pos;
-        hasLastSpot = true;
-        nextSpawnTime = Time.time + spawnInterval;
-        SpotPlaced?.Invoke(pos, rot, strokeMaterial.color);
+        if (len > maxSegment)
+        {
+            // Прицел прыгнул (со стены в воздух и т.п.) — рвём мазок, начинаем новый кусок.
+            hasLast = false;
+            AddPoint(p);
+            return;
+        }
+
+        // Вертикальный мазок по стене — лестница из уступов.
+        if (p.onWall && last.onWall && Mathf.Abs(d.y) > 0.6f * len)
+        {
+            if (len < ladderStep) return;
+            if (PlaceJoint(p)) { last = p; hasLastDir = false; }
+            return;
+        }
+
+        if (!PlaceSegment(last, p))
+        {
+            hasLast = false; // мешает игрок — начнём с новой точки
+            return;
+        }
+
+        Vector3 dir = d / len;
+        if (hasLastDir && Vector3.Angle(lastDir, dir) > jointAngle) PlaceJoint(last);
+        lastDir = dir;
+        hasLastDir = true;
+        last = p;
     }
 
-    // Стереть все пятна и заполнить баллончик (рестарт уровня).
+    // Круглый «блин» в точке: начало мазка, поворот, ступень лестницы.
+    bool PlaceJoint(PaintPoint p)
+    {
+        Quaternion rot = p.onWall
+            ? Quaternion.LookRotation(p.outward, Vector3.up)
+            : Quaternion.FromToRotation(Vector3.up, p.up);
+        Vector3 size = new Vector3(p.width, thickness, p.width);
+        if (OverlapsPlayer(p.pos, rot, size)) return false;
+
+        // Высота меша цилиндра = 2, поэтому по Y масштаб thickness / 2.
+        CreatePiece(PrimitiveType.Cylinder, p.pos, rot, new Vector3(p.width, thickness * 0.5f, p.width), strokeColor, true);
+        return true;
+    }
+
+    // Плита между двумя точками мазка.
+    bool PlaceSegment(PaintPoint a, PaintPoint b)
+    {
+        Vector3 d = b.pos - a.pos;
+        float len = d.magnitude;
+        Vector3 up = Vector3.ProjectOnPlane(a.up + b.up, d);
+        if (up.sqrMagnitude < 0.05f)
+        {
+            // Мазок идёт строго вдоль «верха» (например, вертикально в воздухе) —
+            // ставим плиту лицом к игроку.
+            up = Vector3.ProjectOnPlane(-cam.transform.forward, d);
+            if (up.sqrMagnitude < 0.0001f) return false;
+        }
+
+        Quaternion rot = Quaternion.LookRotation(d / len, up.normalized);
+        float width = (a.width + b.width) * 0.5f;
+        Vector3 center = (a.pos + b.pos) * 0.5f;
+        // Чуть длиннее, чтобы соседние плиты перекрывались без щелей.
+        Vector3 size = new Vector3(width, thickness, len + 0.04f);
+        if (OverlapsPlayer(center, rot, size)) return false;
+
+        CreatePiece(PrimitiveType.Cube, center, rot, size, strokeColor, true);
+        return true;
+    }
+
+    // ---------- Подтёки ----------
+
+    void UpdateDrip()
+    {
+        bool canDrip = target.onWall && !target.onPaint;
+        if (!canDrip) { dripAnchorValid = false; return; }
+
+        if (dripAnchorValid && (target.pos - dripAnchor).sqrMagnitude < 0.15f * 0.15f)
+        {
+            dripStillTime += Time.deltaTime;
+            if (dripStillTime >= dripDelay && !dripSpawnedHere)
+            {
+                var go = new GameObject("Drip");
+                go.transform.SetParent(paintRoot, false);
+                go.AddComponent<DripRunner>().Init(this, target.surface, target.outward, strokeColor, target.width * 0.6f);
+                dripSpawnedHere = true;
+            }
+        }
+        else
+        {
+            dripAnchor = target.pos;
+            dripAnchorValid = true;
+            dripStillTime = 0f;
+            dripSpawnedHere = false;
+        }
+    }
+
+    // Вызывается DripRunner: полоска по стене от from до to и маленький уступ в точке to.
+    public void CreateDripPiece(Vector3 fromSurface, Vector3 toSurface, Vector3 outward, Color color, float ledgeWidth)
+    {
+        Vector3 d = toSurface - fromSurface;
+        float len = d.magnitude;
+        if (len > 0.01f)
+        {
+            Quaternion streakRot = Quaternion.LookRotation(outward, d / len);
+            Vector3 center = (fromSurface + toSurface) * 0.5f + outward * 0.02f;
+            CreatePiece(PrimitiveType.Cube, center, streakRot, new Vector3(0.16f, len, 0.03f), color, false);
+        }
+
+        Vector3 ledgePos = toSurface + outward * (ledgeWidth * 0.5f - 0.03f);
+        Quaternion ledgeRot = Quaternion.LookRotation(outward, Vector3.up);
+        if (!OverlapsPlayer(ledgePos, ledgeRot, new Vector3(ledgeWidth, thickness, ledgeWidth)))
+            CreatePiece(PrimitiveType.Cylinder, ledgePos, ledgeRot, new Vector3(ledgeWidth, thickness * 0.5f, ledgeWidth), color, true);
+    }
+
+    // ---------- Общее ----------
+
+    // Не создаём краску внутри игрока — иначе он застрянет.
+    // По высоте коробку чуть уменьшаем: краска вровень с полом под ногами — это нормально.
+    bool OverlapsPlayer(Vector3 center, Quaternion rot, Vector3 size)
+    {
+        Vector3 half = new Vector3(size.x * 0.5f, Mathf.Max(0.01f, size.y * 0.5f - 0.03f), size.z * 0.5f);
+        return Physics.CheckBox(center, half, rot, 1 << PlayerLayer, QueryTriggerInteraction.Ignore);
+    }
+
+    void CreatePiece(PrimitiveType type, Vector3 pos, Quaternion rot, Vector3 scale, Color color, bool solid)
+    {
+        var go = GameObject.CreatePrimitive(type);
+        go.name = solid ? "PaintPiece" : "PaintStreak";
+        go.transform.SetParent(paintRoot, false);
+        go.transform.SetPositionAndRotation(pos, rot);
+        go.transform.localScale = scale;
+
+        // У цилиндра капсульный коллайдер — для плоского блина меняем его на коробку.
+        DestroyImmediate(go.GetComponent<Collider>());
+        if (solid) go.AddComponent<BoxCollider>();
+
+        go.GetComponent<Renderer>().sharedMaterial = ProtoMaterials.Get(color);
+        if (solid) go.AddComponent<PaintSpot>().Init(color, dryTime, sinkSpeed, maxSink);
+
+        PieceCount++;
+        SpotPlaced?.Invoke(pos, rot, color);
+    }
+
+    // Стереть всю краску и заполнить баллончик (рестарт уровня).
     public void ResetPaint()
     {
-        foreach (Transform child in spotsRoot) Destroy(child.gameObject);
-        SpotCount = 0;
+        foreach (Transform child in paintRoot) Destroy(child.gameObject);
+        PieceCount = 0;
         Paint = maxPaintSeconds;
         EndStroke();
-    }
-
-    void SpawnSpot(Vector3 pos, Quaternion rot, float diameter)
-    {
-        // Цилиндр-«блин». Высота меша цилиндра = 2, поэтому по Y масштаб thickness/2.
-        var spot = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-        spot.name = "PaintSpot";
-        spot.transform.SetParent(spotsRoot, false);
-        spot.transform.SetPositionAndRotation(pos, rot);
-        spot.transform.localScale = new Vector3(diameter, spotThickness * 0.5f, diameter);
-
-        // Капсульный коллайдер цилиндра плохо подходит для плоского блина — меняем на коробку.
-        DestroyImmediate(spot.GetComponent<Collider>());
-        spot.AddComponent<BoxCollider>();
-
-        spot.GetComponent<Renderer>().sharedMaterial = strokeMaterial;
-        spot.AddComponent<PaintSpot>();
-        SpotCount++;
     }
 }

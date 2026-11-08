@@ -23,6 +23,9 @@ public class FirstPersonController : MonoBehaviour
     [Tooltip("Сколько секунд помнится нажатие прыжка до приземления")]
     public float jumpBuffer = 0.12f;
 
+    // На чём игрок стоит прямо сейчас (null — в воздухе). Нужно, чтобы мокрая краска проседала.
+    public Collider GroundCollider { get; private set; }
+
     CharacterController controller;
     float pitch;
     float verticalVelocity;
@@ -87,8 +90,14 @@ public class FirstPersonController : MonoBehaviour
 
         verticalVelocity += gravity * dt;
 
+        GroundCollider = null; // заполнится в OnControllerColliderHit во время Move
         CollisionFlags flags = controller.Move((horizontal + Vector3.up * verticalVelocity) * dt);
         if ((flags & CollisionFlags.Above) != 0 && verticalVelocity > 0f) verticalVelocity = 0f; // ударились головой
+    }
+
+    void OnControllerColliderHit(ControllerColliderHit hit)
+    {
+        if (hit.normal.y > 0.5f) GroundCollider = hit.collider;
     }
 
     public void Teleport(Vector3 position, float yaw)

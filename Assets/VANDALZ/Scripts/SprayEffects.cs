@@ -99,9 +99,18 @@ public class SprayEffects : MonoBehaviour
         ring.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         ring.receiveShadows = false;
 
-        // Окружность в локальной плоскости XZ, чуть выше верхней грани пятна.
-        float r = spray.spotDiameter * 0.5f;
-        float y = spray.spotThickness * 0.5f + 0.015f;
+        SetRingSize(spray.PreviewWidth);
+    }
+
+    float ringDiameter = -1f;
+
+    // Окружность в локальной плоскости XZ, чуть выше верхней грани краски.
+    void SetRingSize(float diameter)
+    {
+        if (Mathf.Abs(diameter - ringDiameter) < 0.005f) return;
+        ringDiameter = diameter;
+        float r = diameter * 0.5f;
+        float y = spray.thickness * 0.5f + 0.015f;
         for (int i = 0; i < RingSegments; i++)
         {
             float a = i * Mathf.PI * 2f / RingSegments;
@@ -116,6 +125,7 @@ public class SprayEffects : MonoBehaviour
         if (!visible) return;
 
         ring.transform.SetPositionAndRotation(spray.PreviewPosition, spray.PreviewRotation);
+        SetRingSize(spray.PreviewWidth); // ширина мазка зависит от дистанции
 
         Color c;
         if (spray.PreviewBlocked) c = new Color(0.6f, 0.6f, 0.6f, 0.35f); // сюда нельзя — внутри игрока
@@ -243,14 +253,14 @@ public class SprayEffects : MonoBehaviour
 
     void OnSpotPlaced(Vector3 pos, Quaternion rot, Color color)
     {
-        // Облачко краски по краям нового пятна.
+        // Облачко краски у нового куска мазка.
         Vector3 up = rot * Vector3.up;
         var p = new ParticleSystem.EmitParams();
-        for (int i = 0; i < 8; i++)
+        for (int i = 0; i < 4; i++)
         {
             Vector3 v = Vector3.ProjectOnPlane(Random.onUnitSphere, up).normalized * Random.Range(0.6f, 1.6f)
                         + up * Random.Range(0.1f, 0.5f);
-            p.position = pos + up * (spray.spotThickness * 0.5f);
+            p.position = pos + up * (spray.thickness * 0.5f);
             p.velocity = v;
             p.startLifetime = Random.Range(0.25f, 0.45f);
             p.startSize = Random.Range(0.1f, 0.2f);
