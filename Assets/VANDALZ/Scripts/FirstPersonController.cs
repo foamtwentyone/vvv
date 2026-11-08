@@ -31,6 +31,17 @@ public class FirstPersonController : MonoBehaviour
     [Header("Шаги")]
     public float stepDistance = 1.9f;
 
+    // Множитель скорости (например, липкий серый след Закрасчика).
+    public float SpeedMultiplier { get; set; } = 1f;
+    // Сейчас подтягивается на уступ.
+    public bool IsMantling => mantleT < 1f;
+    public event Action Mantled;
+
+    [Header("Подтягивание на уступ")]
+    public float mantleMinHeight = 0.45f;
+    public float mantleMaxHeight = 1.75f;
+    public float mantleDuration = 0.32f;
+
     // Управление включено (выключается на заставке и финише).
     public bool InputEnabled { get; set; } = true;
     public Collider GroundCollider { get; private set; }
@@ -58,6 +69,9 @@ public class FirstPersonController : MonoBehaviour
     float stepTravel;
     bool wasGrounded = true;
     float lastAirSpeed;
+    float mantleT = 1f;
+    Vector3 mantleFrom, mantleTo;
+    float mantleCooldown;
 
     void Awake()
     {
@@ -84,10 +98,29 @@ public class FirstPersonController : MonoBehaviour
     void Move()
     {
         float dt = Time.deltaTime;
+        mantleCooldown -= dt;
+
+        // Подтягивание: плавно вверх, потом вперёд на уступ.
+        if (mantleT < 1f)
+        {
+            mantleT = Mathf.Min(1f, mantleT + dt / mantleDuration);
+            float up = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(mantleT / 0.7f));
+            float fwd = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01((mantleT - 0.4f) / 0.6f));
+            Vector3 p = new Vector3(Mathf.Lerp(mantleFrom.x, mantleTo.x, fwd), Mathf.Lerp(mantleFrom.y, mantleTo.y, up), Mathf.Lerp(mantleFrom.z, mantleTo.z, fwd));
+            controller.enabled = false;
+            transform.position = p;
+            controller.enabled = true;
+            if (mantleT >= 1f)
+            {
+                verticalVelocity = -2f;
+                horizontalVelocity = transform.forward * walkSpeed * 0.5f;
+            }
+            return;
+        }
 
         Vector2 input = InputEnabled && Cursor.lockState == CursorLockMode.Locked ? VandalzInput.Move() : Vector2.zero;
         IsSprinting = InputEnabled && VandalzInput.SprintHeld() && input.y > 0.1f;
-        float speed = IsSprinting ? sprintSpeed : walkSpeed;
+        float speed = (IsSprinting ? sprintSpeed : walkSpeed) * SpeedMultiplier;
         Vector3 wish = (transform.right * input.x + transform.forward * input.y) * speed;
 
         // Плавный разгон/торможение.
@@ -118,6 +151,9 @@ public class FirstPersonController : MonoBehaviour
         verticalVelocity += gravity * dt;
         if (!IsGrounded) lastAirSpeed = -verticalVelocity;
 
+        // Идём вперёд на уступ/ящик/полку в пределах досягаемости — подтягиваемся.
+        if (input.y > 0.5f && mantleCooldown <= 0f && verticalVelocity < 3f && TryStartMantle()) return;
+
         // Внешний толчок затухает.
         impulse = Vector3.MoveTowards(impulse, Vector3.zero, 12f * dt);
 
@@ -139,6 +175,39 @@ public class FirstPersonController : MonoBehaviour
                 Footstep?.Invoke();
             }
         }
+    }
+
+    bool TryStartMantle()
+    {
+        int mask = ~(1 << PaintSpray.PlayerLayer);
+        Vector3 pos = transform.position;
+        Vector3 fwd = transform.forward;
+        float r = controller.radius;
+
+        // Впереди препятствие на уровне пояса или груди?
+        bool blocked = Physics.Raycast(pos + Vector3.up * 0.6f, fwd, r + 0.35f, mask, QueryTriggerInteraction.Ignore)
+                    || Physics.Raycast(pos + Vector3.up * 1.2f, fwd, r + 0.35f, mask, QueryTriggerInteraction.Ignore);
+        if (!blocked) return false;
+
+        // Есть ли сверху площадка, куда встать?
+        Vector3 probe = pos + fwd * (r + 0.3f) + Vector3.up * (mantleMaxHeight + 0.3f);
+        if (!Physics.Raycast(probe, Vector3.down, out RaycastHit top, mantleMaxHeight + 0.3f - mantleMinHeight + 0.05f, mask, QueryTriggerInteraction.Ignore)) return false;
+        if (top.normal.y < 0.7f) return false;
+        float h = top.point.y - pos.y;
+        if (h < mantleMinHeight || h > mantleMaxHeight) return false;
+
+        // Хватает ли места встать (и пролезть над краем)?
+        Vector3 standAt = top.point + Vector3.up * 0.02f;
+        if (Physics.CheckCapsule(standAt + Vector3.up * (r + 0.05f), standAt + Vector3.up * (controller.height - r), r * 0.9f, mask, QueryTriggerInteraction.Ignore)) return false;
+        if (Physics.CheckCapsule(pos + Vector3.up * (h + r + 0.05f), pos + Vector3.up * (h + controller.height - r), r * 0.9f, mask, QueryTriggerInteraction.Ignore)) return false;
+
+        mantleFrom = pos;
+        mantleTo = standAt;
+        mantleT = 0f;
+        mantleCooldown = 0.4f;
+        verticalVelocity = 0f;
+        Mantled?.Invoke();
+        return true;
     }
 
     void OnControllerColliderHit(ControllerColliderHit hit)
@@ -164,6 +233,8 @@ public class FirstPersonController : MonoBehaviour
         impulse = Vector3.zero;
         wasGrounded = true;
         lastAirSpeed = 0f;
+        mantleT = 1f;
+        SpeedMultiplier = 1f;
     }
 
     public static void SetCursorLocked(bool locked)

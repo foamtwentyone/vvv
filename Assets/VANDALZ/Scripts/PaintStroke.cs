@@ -20,6 +20,15 @@ public class PaintStroke : MonoBehaviour
     // Все мазки на уровне (Закрасчик ищет по ним краску).
     public static readonly HashSet<PaintStroke> All = new HashSet<PaintStroke>();
     public bool IsErasing { get; private set; }
+    // Старые нарисованные теги (декор уровня) — Закрасчик их не трогает.
+    public bool IsDecor { get; private set; }
+    // Серый след Закрасчика.
+    public bool IsGray { get; set; }
+    // Границы мазка (с запасом на ширину) — для быстрой отсечки при поиске краски.
+    public Bounds Bounds => bounds;
+    Bounds bounds;
+
+    public void MarkDecor() => IsDecor = true;
 
     public StrokeStyle Style { get; private set; }
     public bool Solid { get; private set; }
@@ -88,6 +97,8 @@ public class PaintStroke : MonoBehaviour
 
     public void AddPoint(Vector3 pos, Vector3 normal, float width)
     {
+        if (points.Count == 0) bounds = new Bounds(pos, Vector3.zero);
+        bounds.Encapsulate(new Bounds(pos, Vector3.one * (width + Depth * 2f + 0.1f)));
         points.Add(pos);
         normals.Add(normal.normalized);
         widths.Add(width);
@@ -193,8 +204,29 @@ public class PaintStroke : MonoBehaviour
             }
             return;
         }
-        // Пока краска мокрая — обновляем цвет, блеск и прогиб. Потом мазок статичен.
-        if (Time.time - lastChangeTime <= dryTime + 0.2f) Rebuild();
+        // Пока краска мокрая — обновляем цвет и блеск (дёшево, через материал),
+        // а меш перестраиваем только если мокрая плита просела под игроком.
+        if (Time.time - lastChangeTime <= dryTime + 0.2f)
+        {
+            UpdateMaterial();
+            float sink = TotalSink();
+            if (Mathf.Abs(sink - lastSink) > 0.001f)
+            {
+                lastSink = sink;
+                Rebuild();
+            }
+        }
+    }
+
+    float lastSink;
+
+    float TotalSink()
+    {
+        if (!Solid) return 0f;
+        float s = 0f;
+        foreach (var seg in segments) if (seg != null) s += seg.Sunk;
+        foreach (var pad in pads) if (pad != null) s += pad.Sunk;
+        return s;
     }
 
     float eraseShrink = 1f; // при стирании мазок «сдувается»
@@ -255,9 +287,16 @@ public class PaintStroke : MonoBehaviour
         mesh.SetTriangles(faceTris, 1);
         mesh.RecalculateBounds();
 
-        // Валик: цвет мазка, светлее и глянцевее, пока мокрый.
-        int last = TI[count - 1];
+        UpdateMaterial();
+    }
+
+    // Валик: цвет мазка, светлее и глянцевее, пока мокрый.
+    void UpdateMaterial()
+    {
+        if (points.Count == 0) return;
+        int last = points.Count - 1;
         Color c = WetColor(last);
+        if (IsDecor) c *= 0.75f; // старые теги потускнели
         float wet = Wet(last);
         solidMaterial.color = c;
         solidMaterial.SetColor("_EmissionColor", c * (ProtoMaterials.IsToon ? 1.15f : 0.35f));
@@ -330,7 +369,7 @@ public class PaintStroke : MonoBehaviour
             norms.Add(N[i]); norms.Add(N[i]);
             uvs.Add(new Vector2(0f, v / widthScale));
             uvs.Add(new Vector2(1f, v / widthScale));
-            Color col = WetColor(TI[i]);
+            Color col = StrokeColor; // мокрый оттенок — только у материала валика, ленту не перестраиваем
             col.a = a;
             colors.Add(col); colors.Add(col);
         }

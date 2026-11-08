@@ -58,7 +58,8 @@ public class GameFlow : MonoBehaviour
         if (inventory != null) inventory.Notify += (text, color) => Toast?.Invoke(text, color);
         TagSpot.TagCompleted += OnTagCompleted;
         PaintEater.PlayerHit += OnPlayerHit;
-        if (player != null) player.Landed += OnLanded;
+        PaintEater.Stunned += OnEnemyStunned;
+        if (player != null) { player.Landed += OnLanded; player.Mantled += OnMantled; }
 
         // Гул заброшенного метро.
         ambience = gameObject.AddComponent<AudioSource>();
@@ -75,11 +76,25 @@ public class GameFlow : MonoBehaviour
     {
         TagSpot.TagCompleted -= OnTagCompleted;
         PaintEater.PlayerHit -= OnPlayerHit;
+        PaintEater.Stunned -= OnEnemyStunned;
     }
 
     void OnTagCompleted(TagSpot spot)
     {
-        Toast?.Invoke($"ТЕГ!  {TagsDone}/{TagsTotal}", new Color(1f, 0.82f, 0.2f));
+        // Награда за тег: +40% краски во всех баллонах.
+        if (inventory != null)
+            foreach (var can in inventory.Cans) can.paint = Mathf.Min(can.capacity, can.paint + can.capacity * 0.4f);
+        Toast?.Invoke($"ТЕГ!  {TagsDone}/{TagsTotal}   +краска", new Color(1f, 0.82f, 0.2f));
+    }
+
+    void OnEnemyStunned()
+    {
+        Toast?.Invoke("Ослепил Закрасчика! Беги!", new Color(0.4f, 1f, 0.45f));
+    }
+
+    void OnMantled()
+    {
+        ProcAudio.Play2D(ProcAudio.Jump, 0.3f, 0.8f);
     }
 
     void OnPlayerHit()

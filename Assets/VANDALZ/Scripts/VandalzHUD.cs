@@ -1,37 +1,40 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-// Интерфейс игры (OnGUI, всё рисуется кодом). Масштабируется под высоту экрана (база 1080).
-//  - заставка VANDALZ, пауза, экран финиша;
-//  - прицел, подсказка режима баллона, подсказка «[E] …»;
-//  - панель уровня: название, теги, время;
-//  - слоты баллонов с уровнем краски (выбранный приподнят);
-//  - всплывающие сообщения, красная вспышка при ударе, затемнение.
+// Интерфейс игры в стиле концепта: «стикеры» с толстой чёрной обводкой и жёсткой тенью,
+// неоновые цвета, лёгкий наклон, граффити-логотип с подтёками.
+// OnGUI, всё рисуется кодом; масштаб под высоту экрана (база 1080). Стили создаются один раз.
 public class VandalzHUD : MonoBehaviour
 {
     public GameFlow flow;
     public PaintSpray spray;
     public CanInventory inventory;
 
-    class ToastItem { public string text; public Color color; public float born; }
+    class ToastItem { public string text; public Color color; public float born; public float tilt; }
     readonly List<ToastItem> toasts = new List<ToastItem>();
 
-    Texture2D rounded, circle, ring;
-    GUIStyle box, label, labelCenter, small, title, big;
-    float[] slotLift = new float[8];
+    // Неоновая палитра концепта.
+    static readonly Color Lime = new Color(0.75f, 1f, 0.2f);
+    static readonly Color Cyan = new Color(0.25f, 0.95f, 1f);
+    static readonly Color Pink = new Color(1f, 0.3f, 0.65f);
+    static readonly Color Yellow = new Color(1f, 0.88f, 0.2f);
+    static readonly Color Ink = new Color(0.04f, 0.03f, 0.06f);
+    static readonly Color Paper = new Color(0.1f, 0.1f, 0.14f, 0.92f);
+
+    Texture2D rounded, circle, ring, drip;
+    GUIStyle box, text, textCenter, small, smallCenter, big, title, tiny, toastStyle, lineStyle, pulseStyle;
+    readonly Dictionary<int, GUIStyle> logoStyles = new Dictionary<int, GUIStyle>();
+    readonly GUIContent content = new GUIContent();
+    readonly float[] slotLift = new float[8];
     float scale = 1f;
     float W => Screen.width / scale;
     const float H = 1080f;
-
-    static readonly Color Pink = new Color(1f, 0.25f, 0.6f);
-    static readonly Color Cyan = new Color(0.2f, 0.9f, 1f);
-    static readonly Color Panel = new Color(0.05f, 0.05f, 0.08f, 0.78f);
 
     void Start()
     {
         if (flow != null) flow.Toast += (t, c) =>
         {
-            toasts.Add(new ToastItem { text = t, color = c, born = Time.unscaledTime });
+            toasts.Add(new ToastItem { text = t, color = c, born = Time.unscaledTime, tilt = Random.Range(-2.5f, 2.5f) });
             if (toasts.Count > 4) toasts.RemoveAt(0);
         };
     }
@@ -41,13 +44,19 @@ public class VandalzHUD : MonoBehaviour
         rounded = MakeRounded(32, 12);
         circle = MakeCircle(64, false);
         ring = MakeCircle(64, true);
+        drip = MakeDrip();
 
         box = new GUIStyle { normal = { background = rounded }, border = new RectOffset(13, 13, 13, 13) };
-        label = new GUIStyle(GUI.skin.label) { fontSize = 26, fontStyle = FontStyle.Bold, normal = { textColor = Color.white }, richText = true };
-        labelCenter = new GUIStyle(label) { alignment = TextAnchor.MiddleCenter };
-        small = new GUIStyle(label) { fontSize = 20, fontStyle = FontStyle.Normal };
-        big = new GUIStyle(labelCenter) { fontSize = 64 };
-        title = new GUIStyle(labelCenter) { fontSize = 170, fontStyle = FontStyle.BoldAndItalic };
+        text = new GUIStyle(GUI.skin.label) { fontSize = 26, fontStyle = FontStyle.Bold, richText = true, normal = { textColor = Color.white } };
+        textCenter = new GUIStyle(text) { alignment = TextAnchor.MiddleCenter };
+        small = new GUIStyle(text) { fontSize = 20 };
+        smallCenter = new GUIStyle(small) { alignment = TextAnchor.MiddleCenter };
+        tiny = new GUIStyle(textCenter) { fontSize = 15 };
+        big = new GUIStyle(textCenter) { fontSize = 60 };
+        toastStyle = new GUIStyle(textCenter) { fontSize = 28 };
+        title = new GUIStyle(textCenter) { fontSize = 190, fontStyle = FontStyle.BoldAndItalic };
+        lineStyle = new GUIStyle(smallCenter) { fontSize = 22 };
+        pulseStyle = new GUIStyle(textCenter);
     }
 
     void OnGUI()
@@ -55,8 +64,8 @@ public class VandalzHUD : MonoBehaviour
         if (rounded == null) BuildStyles();
         scale = Screen.height / H;
         GUI.matrix = Matrix4x4.Scale(new Vector3(scale, scale, 1f));
-
         if (flow == null) return;
+
         switch (flow.State)
         {
             case GameState.Title: DrawTitle(); break;
@@ -66,7 +75,7 @@ public class VandalzHUD : MonoBehaviour
         }
 
         DrawToasts();
-        if (flow.HurtFlash > 0f) Fill(new Rect(0, 0, W, H), new Color(0.8f, 0.1f, 0.1f, 0.35f * flow.HurtFlash));
+        if (flow.HurtFlash > 0f) Fill(new Rect(0, 0, W, H), new Color(0.75f, 0.75f, 0.8f, 0.4f * flow.HurtFlash)); // серая «клякса» от удара
         if (flow.FadeAlpha > 0f && flow.State != GameState.Title) Fill(new Rect(0, 0, W, H), new Color(0f, 0f, 0f, flow.FadeAlpha));
     }
 
@@ -74,67 +83,57 @@ public class VandalzHUD : MonoBehaviour
 
     void DrawTitle()
     {
-        Fill(new Rect(0, 0, W, H), new Color(0.02f, 0.02f, 0.04f, 0.82f));
+        Fill(new Rect(0, 0, W, H), new Color(0.01f, 0.02f, 0.03f, 0.78f));
         float t = Time.unscaledTime;
-        float cy = H * 0.36f + Mathf.Sin(t * 1.3f) * 6f;
+        float cy = H * 0.34f + Mathf.Sin(t * 1.3f) * 5f;
+        Logo(new Rect(0, cy - 120, W, 240), "VANDALZ", t);
 
-        // Логотип «граффити»: цветные тени + обводка + белые буквы.
-        var r = new Rect(0, cy - 110, W, 220);
-        Text(Offset(r, 14, 12), "VANDALZ", title, Pink);
-        Text(Offset(r, -8, -6), "VANDALZ", title, Cyan * new Color(1, 1, 1, 0.85f));
-        for (int i = 0; i < 8; i++)
-        {
-            float a = i * Mathf.PI / 4f;
-            Text(Offset(r, Mathf.Cos(a) * 5f, Mathf.Sin(a) * 5f), "VANDALZ", title, Color.black);
-        }
-        Text(r, "VANDALZ", title, Color.white);
+        Sticker(new Rect(W / 2 - 300, cy + 140, 600, 54), "заброшенное метро  ·  прототип", Cyan, -2f, smallCenter);
 
-        Text(new Rect(0, cy + 110, W, 40), "заброшенное метро  ·  прототип", labelCenter, new Color(1f, 1f, 1f, 0.7f));
+        float pulse = 1f + 0.04f * Mathf.Sin(t * 5f);
+        var r = new Rect(W / 2 - 260 * pulse, H * 0.62f, 520 * pulse, 76 * pulse);
+        pulseStyle.fontSize = Mathf.RoundToInt(34 * pulse);
+        Sticker(r, "КЛИКНИ, ЧТОБЫ НАЧАТЬ", Yellow, 2f, pulseStyle, Ink);
 
-        float pulse = 0.55f + 0.45f * Mathf.Sin(t * 4f);
-        Text(new Rect(0, H * 0.62f, W, 50), "КЛИКНИ, ЧТОБЫ НАЧАТЬ", big, new Color(1f, 1f, 1f, pulse));
-
-        DrawControls(new Rect(W / 2 - 430, H * 0.72f, 860, 200));
+        DrawControls(new Rect(W / 2 - 450, H * 0.74f, 900, 190));
     }
 
     void DrawControls(Rect r)
     {
-        Box(r, Panel);
-        string text =
-            "<b>WASD</b> — ходить     <b>Shift</b> — бег     <b>Пробел</b> — прыжок\n" +
-            "<b>ЛКМ</b> — рисовать     <b>E</b> — взять / тайник     <b>G</b> — выбросить\n" +
-            "<b>1–4 / колёсико</b> — сменить баллон     <b>F</b> — встряхнуть     <b>R</b> — заново\n" +
-            "Обычный баллон — стены и пол (линия на стене = полка). Воздушный — мост над пустотой.";
-        GUI.Label(new Rect(r.x + 20, r.y + 14, r.width - 40, r.height - 28), text, new GUIStyle(small) { alignment = TextAnchor.MiddleCenter, richText = true });
+        Panel(r, 0f, Paper, Lime);
+        string s =
+            "<b>WASD</b> ходить   <b>Shift</b> бег   <b>Пробел</b> прыжок (к краю — подтянешься)\n" +
+            "<b>ЛКМ</b> рисовать   <b>F</b> встряхнуть (давление)   <b>E</b> взять / тайник   <b>G</b> выбросить\n" +
+            "<b>1–4 / колёсико</b> баллон   <b>Esc</b> пауза   <b>R</b> заново\n" +
+            "Обычный баллон — стены и пол. Воздушный — мост. Пшикни Закрасчику в глаза!";
+        Outlined(new Rect(r.x + 20, r.y + 10, r.width - 40, r.height - 20), s, smallCenter, Color.white, 1.5f);
     }
 
     void DrawPause()
     {
         Fill(new Rect(0, 0, W, H), new Color(0f, 0f, 0f, 0.55f));
-        Text(new Rect(0, H * 0.3f, W, 90), "ПАУЗА", big, Color.white);
-        Text(new Rect(0, H * 0.3f + 90, W, 40), "кликни, чтобы продолжить  ·  R — заново", labelCenter, new Color(1, 1, 1, 0.8f));
-        DrawControls(new Rect(W / 2 - 430, H * 0.55f, 860, 200));
+        Logo(new Rect(0, H * 0.22f, W, 160), "ПАУЗА", Time.unscaledTime, 120);
+        Sticker(new Rect(W / 2 - 330, H * 0.42f, 660, 56), "кликни, чтобы продолжить   ·   R — заново", Cyan, -1.5f, smallCenter);
+        DrawControls(new Rect(W / 2 - 450, H * 0.55f, 900, 190));
     }
 
     void DrawFinish()
     {
         float k = Mathf.Clamp01(flow.StateTime / 0.6f);
-        Fill(new Rect(0, 0, W, H), new Color(0.02f, 0.02f, 0.04f, 0.75f * k));
-        float y = Mathf.Lerp(H * 0.4f, H * 0.28f, k);
-        var r = new Rect(0, y, W, 160);
-        Text(Offset(r, 10, 8), "ВЫБРАЛСЯ!", title, Pink);
-        Text(r, "ВЫБРАЛСЯ!", title, Color.white);
+        Fill(new Rect(0, 0, W, H), new Color(0.01f, 0.02f, 0.03f, 0.75f * k));
+        float y = Mathf.Lerp(H * 0.4f, H * 0.2f, k);
+        Logo(new Rect(0, y, W, 200), "ВЫБРАЛСЯ!", Time.unscaledTime, 150);
 
         int tags = flow.TagsDone, total = flow.TagsTotal;
-        string stats = $"Время  {FormatTime(flow.Elapsed)}\nТеги  {tags} / {total}\nПадений  {flow.Falls}";
-        var panel = new Rect(W / 2 - 260, y + 200, 520, 190);
-        Box(panel, Panel);
-        GUI.Label(new Rect(panel.x, panel.y + 10, panel.width, panel.height - 20), stats, new GUIStyle(labelCenter) { fontSize = 36 });
+        float py = y + 230;
+        Sticker(new Rect(W / 2 - 330, py, 200, 90), "ВРЕМЯ\n" + FormatTime(flow.Elapsed), Cyan, -3f, textCenter, Ink);
+        Sticker(new Rect(W / 2 - 100, py + 8, 200, 90), $"ТЕГИ\n{tags} / {total}", Yellow, 2f, textCenter, Ink);
+        Sticker(new Rect(W / 2 + 130, py, 200, 90), "ПАДЕНИЙ\n" + flow.Falls, Pink, -2f, textCenter, Ink);
 
         string verdict = tags == total ? "Идеальный вандализм — все споты помечены!" : tags > 0 ? "Неплохо. Но споты ещё остались…" : "Выбрался, но станция осталась серой.";
-        Text(new Rect(0, panel.yMax + 24, W, 40), verdict, labelCenter, tags == total ? new Color(1f, 0.82f, 0.2f) : new Color(1, 1, 1, 0.8f));
+        Outlined(new Rect(0, py + 130, W, 40), verdict, textCenter, tags == total ? Yellow : Color.white, 2f);
         float pulse = 0.55f + 0.45f * Mathf.Sin(Time.unscaledTime * 4f);
-        Text(new Rect(0, panel.yMax + 80, W, 40), "R — ещё раз", labelCenter, new Color(1, 1, 1, pulse));
+        Outlined(new Rect(0, py + 190, W, 40), "R — ещё раз", textCenter, new Color(1, 1, 1, pulse), 2f);
     }
 
     void DrawPlaying()
@@ -151,67 +150,85 @@ public class VandalzHUD : MonoBehaviour
     {
         float cx = W / 2f, cy = H / 2f;
         bool spraying = spray != null && spray.IsSpraying;
-        bool none = spray == null || !spray.HasPreview || spray.PreviewMode == SprayMode.None;
+        SprayMode mode = spray != null && spray.HasPreview ? spray.PreviewMode : SprayMode.None;
+        bool none = mode == SprayMode.None;
         Color c = spray != null ? spray.CurrentColor : Color.white;
 
-        float ringSize = spraying ? 34f + Mathf.Sin(Time.unscaledTime * 30f) * 3f : 26f;
-        if (!none) Tex(new Rect(cx - ringSize / 2, cy - ringSize / 2, ringSize, ringSize), ring, new Color(c.r, c.g, c.b, spraying ? 0.95f : 0.6f));
-        Tex(new Rect(cx - 4, cy - 4, 8, 8), circle, none ? new Color(1, 1, 1, 0.5f) : Color.white);
+        // Кольцо давления: сколько «точек» горит — столько давления.
+        if (spray != null && spray.CurrentCan != null)
+        {
+            const int dots = 24;
+            float p = spray.Pressure;
+            float radius = spraying ? 26f : 22f;
+            for (int i = 0; i < dots; i++)
+            {
+                float a = -Mathf.PI / 2f + i * Mathf.PI * 2f / dots;
+                bool on = i < Mathf.CeilToInt(p * dots);
+                Color dc = on ? (p < 0.25f ? new Color(1f, 0.35f, 0.3f) : new Color(c.r, c.g, c.b, 0.9f)) : new Color(1f, 1f, 1f, 0.15f);
+                float sz = on ? 6f : 4f;
+                Tex(new Rect(cx + Mathf.Cos(a) * radius - sz / 2, cy + Mathf.Sin(a) * radius - sz / 2, sz, sz), circle, dc);
+            }
+        }
+        Tex(new Rect(cx - 5, cy - 5, 10, 10), circle, Ink);
+        Tex(new Rect(cx - 3.5f, cy - 3.5f, 7, 7), circle, none ? new Color(1, 1, 1, 0.5f) : Color.white);
 
         // Подсказка режима под прицелом.
         if (spray == null || !spray.HasPreview) return;
-        string text;
-        if (spray.PreviewBlocked) text = "тут стоишь ты";
-        else switch (spray.PreviewMode)
+        string hint;
+        Color hc = new Color(c.r, c.g, c.b, 1f);
+        if (spray.PreviewBlocked) { hint = "тут стоишь ты"; hc = Color.gray; }
+        else switch (mode)
         {
-            case SprayMode.Wall: text = "стена — объёмное граффити"; break;
-            case SprayMode.Air: text = "воздух — мост"; break;
-            case SprayMode.ExtendBridge: text = "продлить мост"; break;
-            case SprayMode.Surface: text = spray.PreviewNormal.y > 0f ? "пол — граффити" : "потолок — граффити"; break;
+            case SprayMode.Wall: hint = "стена — объёмное граффити"; break;
+            case SprayMode.Air: hint = "воздух — мост"; break;
+            case SprayMode.ExtendBridge: hint = "продлить мост"; break;
+            case SprayMode.Surface: hint = spray.PreviewNormal.y > 0f ? "пол — граффити" : "потолок — граффити"; break;
+            case SprayMode.Enemy: hint = "в глаза ему!"; hc = Lime; break;
             default:
-                text = spray.CurrentCan != null && spray.CurrentCan.type == CanType.Air
-                    ? "воздушный — только в пустоту" : "обычный — только по стенам и полу";
+                hint = spray.CurrentCan != null && spray.CurrentCan.type == CanType.Air ? "воздушный — только в пустоту" : "обычный — только по стенам и полу";
+                hc = new Color(0.8f, 0.8f, 0.8f);
                 break;
         }
-        Color hc = none || spray.PreviewBlocked ? new Color(0.8f, 0.8f, 0.8f, 0.8f) : new Color(c.r, c.g, c.b, 1f);
-        Text(new Rect(cx - 300, cy + 26, 600, 30), text, new GUIStyle(labelCenter) { fontSize = 20 }, hc);
+        if (spray.CurrentCan != null && spray.Pressure < 0.25f) { hint = "давление на нуле — встряхни (F)"; hc = new Color(1f, 0.45f, 0.4f); }
+        Outlined(new Rect(cx - 300, cy + 36, 600, 30), hint, smallCenter, hc, 2f);
     }
 
     void DrawPrompt()
     {
         if (inventory == null) return;
-        string text = null;
+        string s = null;
         if (inventory.LookedAt != null)
-            text = inventory.IsFull ? "Руки заняты — G, чтобы выбросить баллон" : "[E]  взять: " + inventory.LookedAt.can.Title;
+            s = inventory.IsFull ? "Руки заняты — G, чтобы выбросить баллон" : "[E]  взять: " + inventory.LookedAt.can.Title;
         else if (inventory.LookedAtStash != null)
-            text = "[E]  пополнить краску";
-        if (text == null) return;
-
-        var r = new Rect(W / 2 - 260, H / 2 + 70, 520, 50);
-        Box(r, Panel);
-        Text(r, text, labelCenter, Color.white);
+            s = "[E]  пополнить краску";
+        if (s == null) return;
+        Sticker(new Rect(W / 2 - 270, H / 2 + 80, 540, 56), s, Yellow, -1.5f, textCenter, Ink);
     }
 
     void DrawLevelPanel()
     {
-        var r = new Rect(28, 26, 420, 128);
-        Box(r, Panel);
-        Fill(new Rect(r.x, r.y + 14, 6, r.height - 28), Pink);
-        Text(new Rect(r.x + 24, r.y + 12, r.width, 34), flow.levelName, label, Color.white);
-        Text(new Rect(r.x + 24, r.y + 50, r.width, 30), "Теги", small, new Color(1, 1, 1, 0.7f));
+        var r = new Rect(30, 28, 440, 132);
+        Panel(r, -1.5f, Paper, Pink);
+        Matrix4x4 m = GUI.matrix;
+        GUIUtility.RotateAroundPivot(-1.5f, r.center * scale);
+        Outlined(new Rect(r.x + 24, r.y + 12, r.width, 36), flow.levelName, text, Color.white, 2f);
+        Outlined(new Rect(r.x + 24, r.y + 54, 80, 30), "Теги", small, new Color(1, 1, 1, 0.75f), 1.5f);
         for (int i = 0; i < flow.TagsTotal; i++)
         {
             bool done = i < flow.TagsDone;
-            Tex(new Rect(r.x + 90 + i * 30, r.y + 54, 22, 22), done ? circle : ring, done ? new Color(1f, 0.82f, 0.2f) : new Color(1, 1, 1, 0.6f));
+            var dr = new Rect(r.x + 98 + i * 34, r.y + 56, 26, 26);
+            Tex(new Rect(dr.x - 2, dr.y - 2, dr.width + 4, dr.height + 4), circle, Ink);
+            Tex(dr, done ? circle : ring, done ? Yellow : new Color(1, 1, 1, 0.6f));
         }
-        Text(new Rect(r.x + 24, r.y + 86, r.width, 30), "Время  " + FormatTime(flow.Elapsed), small, new Color(1, 1, 1, 0.85f));
+        Outlined(new Rect(r.x + 24, r.y + 90, r.width, 30), "Время  " + FormatTime(flow.Elapsed), small, new Color(1, 1, 1, 0.85f), 1.5f);
+        GUI.matrix = m;
     }
 
     void DrawCans()
     {
         var cans = inventory.Cans;
         int slots = inventory.maxSlots;
-        const float size = 92f, gap = 14f;
+        const float size = 96f, gap = 16f;
         float total = slots * size + (slots - 1) * gap;
         float x0 = (W - total) / 2f, baseY = H - size - 34f;
 
@@ -219,74 +236,136 @@ public class VandalzHUD : MonoBehaviour
         {
             bool has = i < cans.Count;
             bool selected = has && i == inventory.Selected;
-            slotLift[i] = Mathf.Lerp(slotLift[i], selected ? 16f : 0f, 1f - Mathf.Exp(-14f * Time.unscaledDeltaTime));
+            slotLift[i] = Mathf.Lerp(slotLift[i], selected ? 18f : 0f, 1f - Mathf.Exp(-14f * Time.unscaledDeltaTime));
             var r = new Rect(x0 + i * (size + gap), baseY - slotLift[i], size, size);
+            float tilt = selected ? -3f : (i % 2 == 0 ? 1.5f : -1f);
+            SprayCan can = has ? cans[i] : null;
+            Panel(r, tilt, Paper, selected ? (can != null ? can.color : Color.white) : new Color(0.3f, 0.3f, 0.35f));
 
-            if (selected) Box(new Rect(r.x - 4, r.y - 4, r.width + 8, r.height + 8), Color.white);
-            Box(r, Panel);
-            Text(new Rect(r.x + 10, r.y + 4, 30, 26), (i + 1).ToString(), small, new Color(1, 1, 1, 0.6f));
-            if (!has) continue;
-
-            SprayCan can = cans[i];
-            // Значок баллона: корпус (заливка = остаток краски), крышка цвета краски.
-            var body = new Rect(r.x + size / 2 - 17, r.y + 30, 34, 50);
-            Box(body, new Color(0.25f, 0.25f, 0.3f));
-            float fill = can.Fill01;
-            if (fill > 0f)
+            Matrix4x4 m = GUI.matrix;
+            GUIUtility.RotateAroundPivot(tilt, r.center * scale);
+            Outlined(new Rect(r.x + 10, r.y + 6, 30, 26), (i + 1).ToString(), small, new Color(1, 1, 1, 0.7f), 1.5f);
+            if (can != null)
             {
-                var f = new Rect(body.x + 3, body.yMax - 3 - (body.height - 6) * fill, body.width - 6, (body.height - 6) * fill);
-                Fill(f, can.color);
+                // Баллон-значок: корпус с уровнем краски, крышка цвета краски.
+                var body = new Rect(r.x + size / 2 - 18, r.y + 30, 36, 54);
+                Box(new Rect(body.x - 3, body.y - 3, body.width + 6, body.height + 6), Ink);
+                Box(body, can.type == CanType.Air ? new Color(0.85f, 0.9f, 0.95f) : new Color(0.45f, 0.45f, 0.5f));
+                float fill = can.Fill01;
+                if (fill > 0f) Fill(new Rect(body.x + 4, body.yMax - 4 - (body.height - 8) * fill, body.width - 8, (body.height - 8) * fill), can.color);
+                Box(new Rect(body.x + 7, body.y - 13, body.width - 14, 14), Ink);
+                Fill(new Rect(body.x + 9, body.y - 11, body.width - 18, 10), can.color);
+                if (can.type == CanType.Air) Outlined(new Rect(r.x, r.yMax - 24, size, 22), "ВОЗДУХ", tiny, Cyan, 1.5f);
+                if (can.IsEmpty) Outlined(new Rect(r.x, r.y + 40, size, 30), "пусто", smallCenter, new Color(1f, 0.45f, 0.4f), 2f);
+                // Подтёк краски под выбранным баллоном.
+                if (selected) Tex(new Rect(r.x + size * 0.62f, r.yMax - 2, 12, 22 + Mathf.Sin(Time.unscaledTime * 2f) * 4f), drip, can.color);
             }
-            Fill(new Rect(body.x + 8, body.y - 10, body.width - 16, 12), can.type == CanType.Air ? Color.white : can.color);
-            if (can.type == CanType.Air) Text(new Rect(r.x, r.yMax - 26, size, 24), "ВОЗДУХ", new GUIStyle(labelCenter) { fontSize = 14 }, Color.white);
-            if (can.IsEmpty) Text(new Rect(r.x, r.y + 40, size, 30), "пусто", new GUIStyle(labelCenter) { fontSize = 18 }, new Color(1f, 0.5f, 0.5f));
+            GUI.matrix = m;
         }
 
         SprayCan current = inventory.Current;
         string line = current == null ? "нет баллона — подбери (E)"
             : current.IsEmpty ? current.Title + ": пусто — тайник (E) или выбросить (G)"
             : $"{current.Title}   {current.paint:0.0} с";
-        Color lc = current != null ? current.color : Color.white;
-        Text(new Rect(0, baseY - 54, W, 30), line, new GUIStyle(labelCenter) { fontSize = 22 }, Color.Lerp(lc, Color.white, 0.4f));
+        Color lc = current != null ? Color.Lerp(current.color, Color.white, 0.3f) : Color.white;
+        Outlined(new Rect(0, baseY - 56, W, 30), line, lineStyle, lc, 2f);
     }
 
     void DrawToasts()
     {
         float now = Time.unscaledTime;
         toasts.RemoveAll(t => now - t.born > 3.2f);
-        float y = 150f;
+        float y = 176f;
         for (int i = toasts.Count - 1; i >= 0; i--)
         {
             var t = toasts[i];
             float age = now - t.born;
-            float a = Mathf.Clamp01(age / 0.15f) * Mathf.Clamp01((3.2f - age) / 0.5f);
-            float slide = (1f - Mathf.Clamp01(age / 0.25f)) * -30f;
-            var style = new GUIStyle(labelCenter) { fontSize = 28 };
-            float w = Mathf.Min(W - 80, style.CalcSize(new GUIContent(t.text)).x + 60);
-            var r = new Rect(W / 2 - w / 2, y + slide, w, 54);
-            Box(r, new Color(Panel.r, Panel.g, Panel.b, Panel.a * a));
-            Fill(new Rect(r.x + 10, r.y + 12, 5, r.height - 24), new Color(t.color.r, t.color.g, t.color.b, a));
-            Text(r, t.text, style, new Color(Mathf.Lerp(t.color.r, 1f, 0.5f), Mathf.Lerp(t.color.g, 1f, 0.5f), Mathf.Lerp(t.color.b, 1f, 0.5f), a));
-            y += 64f;
+            float a = Mathf.Clamp01(age / 0.12f) * Mathf.Clamp01((3.2f - age) / 0.5f);
+            float pop = 1f + 0.15f * Mathf.Clamp01(1f - age / 0.18f);
+            content.text = t.text;
+            float w = Mathf.Min(W - 80, toastStyle.CalcSize(content).x + 70) * pop;
+            var r = new Rect(W / 2 - w / 2, y, w, 58 * pop);
+            Sticker(r, t.text, t.color, t.tilt, toastStyle, Ink, a);
+            y += 72f;
         }
     }
 
-    // ---------- Рисование ----------
+    // ---------- Стикеры и текст ----------
 
-    static string FormatTime(float s) => $"{(int)(s / 60f):00}:{(int)(s % 60f):00}";
+    // Граффити-логотип: цветные «тени», толстая чёрная обводка, белые буквы и неоновые подтёки.
+    void Logo(Rect r, string word, float t, int size = 190)
+    {
+        if (!logoStyles.TryGetValue(size, out var st)) logoStyles[size] = st = new GUIStyle(title) { fontSize = size };
+        Outlined(Offset(r, 16, 14), word, st, Pink, 0f);
+        Outlined(Offset(r, -9, -6), word, st, new Color(Cyan.r, Cyan.g, Cyan.b, 0.9f), 0f);
+        Outlined(r, word, st, Color.white, 6f);
+        content.text = word;
+        float w = st.CalcSize(content).x;
+        float x0 = W / 2 - w / 2;
+        Color[] cols = { Lime, Cyan, Pink, Yellow, Lime };
+        for (int i = 0; i < 5; i++)
+        {
+            float x = x0 + w * (0.12f + i * 0.19f);
+            float len = 40f + 30f * Mathf.Sin(t * 0.8f + i * 1.7f) + i * 6f;
+            Tex(new Rect(x - 8, r.y + r.height * 0.78f, 16, len + 8), drip, Ink);
+            Tex(new Rect(x - 6, r.y + r.height * 0.78f, 12, len), drip, cols[i]);
+        }
+    }
 
-    static Rect Offset(Rect r, float dx, float dy) => new Rect(r.x + dx, r.y + dy, r.width, r.height);
+    // Стикер: чёрная подложка-обводка, жёсткая тень, цветная плашка, текст. Слегка повёрнут.
+    void Sticker(Rect r, string s, Color color, float tilt, GUIStyle style, Color? textColor = null, float alpha = 1f)
+    {
+        Matrix4x4 m = GUI.matrix;
+        GUIUtility.RotateAroundPivot(tilt, r.center * scale);
+        Box(Offset(Grow(r, 4), 7, 7), new Color(0f, 0f, 0f, 0.55f * alpha));
+        Box(Grow(r, 4), new Color(Ink.r, Ink.g, Ink.b, alpha));
+        Box(r, new Color(color.r, color.g, color.b, alpha));
+        Color tc = textColor ?? Color.white;
+        tc.a *= alpha;
+        if (textColor.HasValue) Label(r, s, style, tc);
+        else Outlined(r, s, style, tc, 2f);
+        GUI.matrix = m;
+    }
 
-    void Text(Rect r, string text, GUIStyle style, Color color)
+    // Панель: тёмная плашка с цветной полосой слева и чёрной обводкой.
+    void Panel(Rect r, float tilt, Color fill, Color accent)
+    {
+        Matrix4x4 m = GUI.matrix;
+        GUIUtility.RotateAroundPivot(tilt, r.center * scale);
+        Box(Offset(Grow(r, 4), 6, 6), new Color(0f, 0f, 0f, 0.5f));
+        Box(Grow(r, 4), Ink);
+        Box(r, fill);
+        Fill(new Rect(r.x + 8, r.y + 14, 6, r.height - 28), accent);
+        GUI.matrix = m;
+    }
+
+    // Текст с чёрной обводкой (8 копий вокруг) — читается на любом фоне.
+    void Outlined(Rect r, string s, GUIStyle style, Color color, float thickness)
+    {
+        if (Event.current.type != EventType.Repaint) return;
+        if (thickness > 0f)
+        {
+            Color o = new Color(Ink.r, Ink.g, Ink.b, color.a);
+            for (int i = 0; i < 8; i++)
+            {
+                float a = i * Mathf.PI / 4f;
+                Label(Offset(r, Mathf.Cos(a) * thickness, Mathf.Sin(a) * thickness), s, style, o);
+            }
+        }
+        Label(r, s, style, color);
+    }
+
+    void Label(Rect r, string s, GUIStyle style, Color color)
     {
         Color old = GUI.color;
-        // Тень.
-        GUI.color = new Color(0f, 0f, 0f, color.a * 0.6f);
-        GUI.Label(Offset(r, 2, 2), text, style);
         GUI.color = color;
-        GUI.Label(r, text, style);
+        GUI.Label(r, s, style);
         GUI.color = old;
     }
+
+    static string FormatTime(float s) => $"{(int)(s / 60f):00}:{(int)(s % 60f):00}";
+    static Rect Offset(Rect r, float dx, float dy) => new Rect(r.x + dx, r.y + dy, r.width, r.height);
+    static Rect Grow(Rect r, float d) => new Rect(r.x - d, r.y - d, r.width + d * 2, r.height + d * 2);
 
     void Box(Rect r, Color c)
     {
@@ -338,6 +417,32 @@ public class VandalzHUD : MonoBehaviour
                 float d = Vector2.Distance(new Vector2(x + 0.5f, y + 0.5f), new Vector2(size / 2f, size / 2f));
                 float a = Mathf.Clamp01(r - d + 0.5f);
                 if (hollow) a *= Mathf.Clamp01(d - (r - size * 0.12f) + 0.5f);
+                tex.SetPixel(x, y, new Color(1f, 1f, 1f, a));
+            }
+        tex.Apply();
+        return tex;
+    }
+
+    // Капля-подтёк: узкая полоса со скруглённой каплей внизу (сверху — y = height).
+    static Texture2D MakeDrip()
+    {
+        const int w = 16, h = 64;
+        var tex = new Texture2D(w, h, TextureFormat.RGBA32, false) { wrapMode = TextureWrapMode.Clamp, filterMode = FilterMode.Bilinear };
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+            {
+                float cx = x + 0.5f - w / 2f;
+                float a;
+                if (y < w) // капля внизу (в текстуре y=0 — низ)
+                {
+                    float cy = y + 0.5f - w / 2f;
+                    a = Mathf.Clamp01(w / 2f - Mathf.Sqrt(cx * cx + cy * cy) + 0.5f);
+                }
+                else
+                {
+                    float half = Mathf.Lerp(w * 0.32f, w * 0.42f, (y - w) / (float)(h - w));
+                    a = Mathf.Clamp01(half - Mathf.Abs(cx) + 0.5f);
+                }
                 tex.SetPixel(x, y, new Color(1f, 1f, 1f, a));
             }
         tex.Apply();

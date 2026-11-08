@@ -18,7 +18,7 @@ public class SubwayLevelBuilder : MonoBehaviour
     const float UpperY = 3f;     // верхний ярус
     const float EndZ = 46f;
 
-    Transform root, decor, cansRoot;
+    Transform root, decor, cansRoot, gameplayRoot, lampsRoot;
     CanInventory inventory;
     GameFlow flow;
     FirstPersonController player;
@@ -36,6 +36,8 @@ public class SubwayLevelBuilder : MonoBehaviour
         decor = new GameObject("Decor").transform;
         decor.SetParent(root, false);
         cansRoot = new GameObject("Cans").transform;
+        gameplayRoot = new GameObject("Gameplay").transform; // всё, что двигается или меняется
+        lampsRoot = new GameObject("Lamps").transform;
 
         CreateMaterials();
         BuildStructure();
@@ -43,6 +45,9 @@ public class SubwayLevelBuilder : MonoBehaviour
         BuildDecor();
         BuildRuin();
         BuildLights();
+        // Статическое объединение мешей здесь не используем: оно переводит вершины в мировые координаты,
+        // и контур мультяшного шейдера («раздувание от центра объекта») перестал бы работать.
+        BuildOldTags();
         BuildPlayer(new Vector3(0f, 0.05f, 1.5f));
         BuildGameplay();
     }
@@ -64,7 +69,7 @@ public class SubwayLevelBuilder : MonoBehaviour
         RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
         RenderSettings.ambientLight = new Color(0.11f, 0.16f, 0.18f); // бирюзовая темнота
         RenderSettings.reflectionIntensity = 0.12f; // не отражать небо в подземелье
-        QualitySettings.pixelLightCount = 8;        // много ламп — пусть все светят попиксельно
+        QualitySettings.pixelLightCount = 6;        // ближайшие лампы — попиксельно, остальные дешевле
     }
 
     void CreateMaterials()
@@ -195,7 +200,7 @@ public class SubwayLevelBuilder : MonoBehaviour
         Hint(new Vector3(2.6f, 2.3f, 3.18f), "ЛКМ — рисовать\nE — взять баллон");
         Hint(new Vector3(-2.6f, 2.3f, 8.68f), "Впереди пропасть!\nВоздушный баллон\nрисует мост");
         Hint(new Vector3(2.6f, 2.3f, 23.18f), "Закрасчик стирает\nкраску. Не стой\nрядом с ним!");
-        Hint(new Vector3(0f, 2.5f, 31.9f), "Нарисуй полки обычным баллоном и залезь наверх");
+        Hint(new Vector3(0f, 2.55f, 31.9f), "Нарисуй полки обычным баллоном и залезь наверх", 0.17f);
 
         // Выход: турникеты, табличка, зелёный свет.
         for (float x = -3.3f; x <= 3.31f; x += 1.65f)
@@ -332,7 +337,8 @@ public class SubwayLevelBuilder : MonoBehaviour
             bool broken = Mathf.Abs(z - 18f) < 0.1f || Mathf.Abs(z - 28f) < 0.1f;
             Vector3 pos = new Vector3(0f, CeilY - 0.45f, z);
             Block("LampHousing", pos + Vector3.up * 0.06f, new Vector3(0.35f, 0.08f, 1.5f), matMetal, 1f, false);
-            var tube = Block("LampTube", pos, new Vector3(0.14f, 0.05f, 1.35f), Emissive(LampColor, 1.8f), 1f, false);
+            // Трубка лампы мигает (меняет материал) — держим её вне объединённой геометрии.
+            var tube = Block("LampTube", pos, new Vector3(0.14f, 0.05f, 1.35f), Emissive(LampColor, 1.8f), 1f, false, 0f, Face.All, lampsRoot);
 
             var lightGo = new GameObject("Lamp");
             lightGo.transform.SetParent(root, false);
@@ -430,17 +436,17 @@ public class SubwayLevelBuilder : MonoBehaviour
         flow.checkpoints.Add(new GameFlow.Checkpoint { name = "верхний ярус", zone = new Bounds(new Vector3(0f, UpperY + 1f, 39f), new Vector3(8f, 3f, 14f)), spawn = new Vector3(0f, UpperY + 0.05f, 33f), yaw = 0f });
 
         // Тайники с краской.
-        PaintStash.Create(root, new Vector3(-3.2f, 0f, 1.4f), 90f);
-        PaintStash.Create(root, new Vector3(3.2f, 0f, 20.9f), -90f);
-        PaintStash.Create(root, new Vector3(-3.2f, UpperY, 34.5f), 90f);
+        PaintStash.Create(gameplayRoot, new Vector3(-3.2f, 0f, 1.4f), 90f);
+        PaintStash.Create(gameplayRoot, new Vector3(3.2f, 0f, 20.9f), -90f);
+        PaintStash.Create(gameplayRoot, new Vector3(-3.2f, UpperY, 34.5f), 90f);
 
         // Споты для тегов.
-        TagSpot.Create(root, new Vector3(-HalfW + 0.02f, 2.1f, 6.8f), Vector3.right, new Vector2(2.4f, 1.4f), "СТАРТ");
-        TagSpot.Create(root, new Vector3(HalfW - 0.02f, 1.9f, 16f), Vector3.left, new Vector2(2.6f, 1.4f), "НАД ПУТЯМИ");
-        TagSpot.Create(root, new Vector3(-HalfW + 0.02f, UpperY + 2f, 39.5f), Vector3.right, new Vector2(2.4f, 1.4f), "ВЕРХ");
+        TagSpot.Create(gameplayRoot, new Vector3(-HalfW + 0.02f, 2.1f, 6.8f), Vector3.right, new Vector2(2.4f, 1.4f), "СТАРТ");
+        TagSpot.Create(gameplayRoot, new Vector3(HalfW - 0.02f, 1.9f, 16f), Vector3.left, new Vector2(2.6f, 1.4f), "НАД ПУТЯМИ");
+        TagSpot.Create(gameplayRoot, new Vector3(-HalfW + 0.02f, UpperY + 2f, 39.5f), Vector3.right, new Vector2(2.4f, 1.4f), "ВЕРХ");
 
         // Закрасчик на средней платформе.
-        PaintEater.Create(root, new Vector3(0f, 0f, 27f), new Vector2(-1.6f, 20.8f), new Vector2(1.6f, 31.2f), player, rig);
+        PaintEater.Create(gameplayRoot, new Vector3(0f, 0f, 27f), new Vector2(-1.6f, 20.8f), new Vector2(1.6f, 31.2f), player, rig);
 
         flow.Restarted += ResetCans;
         ResetCans();
@@ -578,12 +584,55 @@ public class SubwayLevelBuilder : MonoBehaviour
         WorldText.Create(decor, "ЗАБРОШЕННАЯ", pos + n * 0.02f, Quaternion.LookRotation(-n, Vector3.up), 0.32f, new Color(0.95f, 0.95f, 0.9f));
     }
 
-    // Табличка-подсказка на колонне, смотрит на игрока (по -Z).
-    void Hint(Vector3 pos, string text)
+    // Подсказка неоновым граффити (с чёрной обводкой), смотрит на игрока, идущего по +Z.
+    static readonly Color[] HintColors = { new Color(0.75f, 1f, 0.2f), new Color(0.25f, 0.95f, 1f), new Color(1f, 0.35f, 0.7f), new Color(1f, 0.88f, 0.2f) };
+    int hintIndex;
+
+    void Hint(Vector3 pos, string text, float height = 0.1f)
     {
-        var board = Picture("HintBoard", pos, Vector3.back, 1.5f, 0.75f, ProtoMaterials.Get(new Color(0.07f, 0.07f, 0.09f)), 0f);
-        board.transform.localScale = new Vector3(text.Length > 30 && !text.Contains("\n") ? 5.2f : 1.5f, 0.75f, 1f);
-        WorldText.Create(decor, text, pos + Vector3.back * 0.01f, Quaternion.identity, 0.13f, new Color(1f, 0.92f, 0.5f));
+        Color c = HintColors[hintIndex++ % HintColors.Length];
+        float tilt = (hintIndex % 2 == 0 ? 1f : -1f) * 3f;
+        WorldText.CreateOutlined(decor, text, pos + Vector3.back * 0.01f, Quaternion.Euler(0f, 0f, tilt), height, c, height * 0.07f);
+    }
+
+    // Старый нарисованный тег (декор): объёмный неоновый мазок по точкам. Закрасчик его не трогает.
+    void DecorStroke(Vector3[] pts, Vector3 normal, float width, Color color, float depth = 0.1f)
+    {
+        var go = new GameObject("OldTag");
+        go.transform.SetParent(gameplayRoot, false);
+        var st = go.AddComponent<PaintStroke>();
+        st.Init(color, StrokeStyle.Raised, depth, false, 0f);
+        st.MarkDecor();
+        foreach (var p in pts) st.AddPoint(p + normal * 0.02f, normal, width);
+    }
+
+    // Декор: лестница-подсказка (как на концепте), стрелка к воздушному баллону, тег у старта.
+    void BuildOldTags()
+    {
+        Color cyan = new Color(0.25f, 0.95f, 1f), lime = new Color(0.7f, 1f, 0.2f), pink = new Color(1f, 0.3f, 0.65f);
+
+        // Лестница на правой стене у старта: две стойки и перекладины.
+        Vector3 n = Vector3.left;
+        float x = HalfW - 0.02f;
+        DecorStroke(new[] { new Vector3(x, 0.3f, 4.75f), new Vector3(x, 1.4f, 4.73f), new Vector3(x, 2.6f, 4.77f) }, n, 0.1f, cyan);
+        DecorStroke(new[] { new Vector3(x, 0.3f, 5.5f), new Vector3(x, 1.4f, 5.52f), new Vector3(x, 2.6f, 5.48f) }, n, 0.1f, cyan);
+        for (float y = 0.6f; y < 2.5f; y += 0.5f)
+            DecorStroke(new[] { new Vector3(x, y, 4.75f), new Vector3(x, y + 0.02f, 5.12f), new Vector3(x, y, 5.5f) }, n, 0.09f, cyan);
+        WorldText.CreateOutlined(decor, "полки = лестница", new Vector3(x - 0.03f, 2.95f, 5.1f), Quaternion.LookRotation(Vector3.right, Vector3.up) * Quaternion.Euler(0f, 0f, -4f), 0.13f, cyan);
+
+        // Стрелка на полу к воздушному баллону.
+        Vector3 up = Vector3.up;
+        DecorStroke(new[] { new Vector3(-0.2f, 0.01f, 9.2f), new Vector3(0.8f, 0.01f, 9.7f), new Vector3(1.8f, 0.01f, 10.2f) }, up, 0.22f, lime, 0.04f);
+        DecorStroke(new[] { new Vector3(1.3f, 0.01f, 10.45f), new Vector3(1.85f, 0.01f, 10.22f), new Vector3(1.55f, 0.01f, 9.7f) }, up, 0.2f, lime, 0.04f);
+
+        // Розовый тег-завитушка на задней стене у старта.
+        var tag = new System.Collections.Generic.List<Vector3>();
+        for (int i = 0; i <= 18; i++)
+        {
+            float t = i / 18f;
+            tag.Add(new Vector3(-1.2f + t * 2.4f, 2.4f + Mathf.Sin(t * Mathf.PI * 3f) * 0.35f + t * 0.2f, 0.02f));
+        }
+        DecorStroke(tag.ToArray(), Vector3.forward, 0.16f, pink);
     }
 
     void Bench(Vector3 pos, float yaw)

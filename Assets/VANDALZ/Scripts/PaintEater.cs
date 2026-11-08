@@ -1,10 +1,13 @@
 using System;
 using UnityEngine;
 
-// ЗАКРАСЧИК — серый монстр из краски с валиком.
-//  - бродит по своей платформе (area);
-//  - замечает свежую краску рядом (senseRadius), ползёт к ней и закатывает валиком — мазок сереет и исчезает;
-//  - если игрок подошёл вплотную — отталкивает его (можно улететь в пропасть).
+// ЗАКРАСЧИК — серый монстр из краски с валиками. Поведение (состояния):
+//  - Patrol:      бродит по своей платформе (area), оставляя липкий серый след (по нему игрок идёт медленнее);
+//  - Investigate: услышал шипение баллона — идёт посмотреть, куда летела краска;
+//  - Erase:       заметил свежую краску (senseRadius) — идёт к ней и закатывает валиком;
+//  - Stunned:     получил краску в глаза — ослеп на несколько секунд, трёт глаза, никого не трогает.
+// Если игрок подошёл вплотную — отталкивает его (можно улететь в пропасть).
+// Тело — препятствие: сквозь Закрасчика не пройти.
 // Анимация: ходит на ногах, тело колышется, руки покачивают валиками, глаза следят за игроком, капли тянутся.
 public class PaintEater : MonoBehaviour
 {
@@ -22,6 +25,18 @@ public class PaintEater : MonoBehaviour
     [Tooltip("Достаёт валиком: по высоте (уступы выше — в безопасности)")]
     public float eraseHeight = 1.7f;
     public float pushForce = 9f;
+    [Tooltip("Слышит баллон в этом радиусе")]
+    public float hearingRadius = 10f;
+    [Tooltip("Сколько секунд краски в глаза нужно, чтобы ослепить")]
+    public float splashToStun = 0.5f;
+    public float stunDuration = 4.5f;
+
+    public enum State { Patrol, Investigate, Erase, Stunned }
+    public State CurrentState { get; private set; } = State.Patrol;
+    public bool IsStunned => CurrentState == State.Stunned;
+
+    // Ослепили (для интерфейса).
+    public static event Action Stunned;
 
     public FirstPersonController player;
     public CameraRig cameraRig;
@@ -32,7 +47,15 @@ public class PaintEater : MonoBehaviour
     Transform body, roller, rollerPivot;
     Vector3 patrolTarget;
     PaintStroke target;
-    float scanTimer, chewTimer, hitCooldown, growlCooldown;
+    float scanTimer, chewTimer, hitCooldown, growlCooldown, eraseTimer;
+    float splashMeter, stunUntil, investigateUntil;
+    Vector3 investigatePoint;
+
+    // Серый след.
+    PaintStroke trail;
+    Vector3 lastTrailPos;
+    readonly System.Collections.Generic.Queue<Vector3> trailPoints = new System.Collections.Generic.Queue<Vector3>();
+    readonly System.Collections.Generic.Queue<PaintStroke> trailStrokes = new System.Collections.Generic.Queue<PaintStroke>();
     float rollAngle;
     AudioSource rollSound;
     Vector3 lastPos;
@@ -51,6 +74,15 @@ public class PaintEater : MonoBehaviour
         e.player = player;
         e.cameraRig = rig;
         e.BuildModel();
+
+        // Тело — препятствие для игрока и цель для баллона (кинематика: двигаем сами).
+        var col = go.AddComponent<CapsuleCollider>();
+        col.center = new Vector3(0f, 1.5f, 0.1f);
+        col.radius = 0.55f;
+        col.height = 3f;
+        var rb = go.AddComponent<Rigidbody>();
+        rb.isKinematic = true;
+        rb.useGravity = false;
         return e;
     }
 
@@ -200,47 +232,87 @@ public class PaintEater : MonoBehaviour
         return new Vector3(Mathf.Clamp(p.x, areaMinXZ.x, areaMaxXZ.x), floorY, Mathf.Clamp(p.z, areaMinXZ.y, areaMaxXZ.y));
     }
 
+    void OnEnable() => PaintSpray.SprayHeard += OnSprayHeard;
+    void OnDisable() => PaintSpray.SprayHeard -= OnSprayHeard;
+
+    void OnSprayHeard(Vector3 where)
+    {
+        if (IsStunned || CurrentState == State.Erase) return;
+        if ((where - transform.position).sqrMagnitude > hearingRadius * hearingRadius) return;
+        investigatePoint = ClampToArea(where);
+        investigateUntil = Time.time + 3f;
+        if (CurrentState != State.Investigate && growlCooldown <= 0f)
+        {
+            ProcAudio.PlayAt(ProcAudio.EnemyGrowl, transform.position, 0.8f, 1.15f);
+            growlCooldown = 3f;
+        }
+        CurrentState = State.Investigate;
+    }
+
+    // Краска попала в глаза (вызывает PaintSpray, пока игрок целится в Закрасчика).
+    public void Splash(float dt, Vector3 where)
+    {
+        if (IsStunned) return;
+        splashMeter += dt;
+        if (splashMeter >= splashToStun)
+        {
+            splashMeter = 0f;
+            CurrentState = State.Stunned;
+            stunUntil = Time.time + stunDuration;
+            target = null;
+            ProcAudio.PlayAt(ProcAudio.EnemyGrowl, transform.position, 1f, 1.6f);
+            Stunned?.Invoke();
+        }
+    }
+
     void Update()
     {
         float dt = Time.deltaTime;
         hitCooldown -= dt;
         growlCooldown -= dt;
+        splashMeter = Mathf.Max(0f, splashMeter - dt * 0.25f); // если перестали брызгать — «отмаргивается»
 
-        // Ищем ближайшую краску, до которой можно дотянуться валиком.
+        if (CurrentState == State.Stunned)
+        {
+            if (Time.time >= stunUntil) CurrentState = State.Patrol;
+            UpdateSlowTrail();
+            Animate(dt);
+            return;
+        }
+
+        // Ищем краску, до которой можно дотянуться (раз в 0.3 с).
         scanTimer -= dt;
         if (scanTimer <= 0f)
         {
             scanTimer = 0.3f;
-            PaintStroke best = null;
-            float bestD = senseRadius;
-            foreach (var s in PaintStroke.All)
-            {
-                if (s == null || s.IsErasing || s.Count == 0) continue;
-                Vector3 p = s.ClosestPoint(transform.position);
-                if (p.y < floorY - 0.6f || p.y > floorY + eraseHeight) continue; // не достать
-                Vector3 reach = ClampToArea(p);
-                float d = Vector3.Distance(new Vector3(reach.x, 0f, reach.z), new Vector3(transform.position.x, 0f, transform.position.z))
-                          + Vector2.Distance(new Vector2(reach.x, reach.z), new Vector2(p.x, p.z)); // краска за краем платформы — дальше
-                if (d < bestD) { bestD = d; best = s; }
-            }
+            PaintStroke best = FindPaint();
             if (best != null && target == null && growlCooldown <= 0f)
             {
                 ProcAudio.PlayAt(ProcAudio.EnemyGrowl, transform.position, 0.9f);
                 growlCooldown = 4f;
             }
             target = best;
+            if (target != null) CurrentState = State.Erase;
+            else if (CurrentState == State.Erase) CurrentState = State.Patrol;
         }
+        if (CurrentState == State.Investigate && Time.time > investigateUntil) CurrentState = State.Patrol;
 
         // Куда идём.
         Vector3 dest;
         float speed;
-        if (target != null && !target.IsErasing)
+        if (CurrentState == State.Erase && target != null && !target.IsErasing)
         {
             dest = ClampToArea(target.ClosestPoint(transform.position));
             speed = chaseSpeed;
         }
+        else if (CurrentState == State.Investigate)
+        {
+            dest = investigatePoint;
+            speed = (patrolSpeed + chaseSpeed) * 0.5f;
+        }
         else
         {
+            if (CurrentState == State.Erase) CurrentState = State.Patrol;
             target = null;
             if (Vector3.Distance(transform.position, patrolTarget) < 0.4f) PickPatrolTarget();
             dest = patrolTarget;
@@ -253,17 +325,54 @@ public class PaintEater : MonoBehaviour
         {
             Quaternion look = Quaternion.LookRotation(to.normalized, Vector3.up);
             transform.rotation = Quaternion.RotateTowards(transform.rotation, look, 200f * dt);
-            // Едет туда, куда смотрит (плавные развороты).
             float facing = Mathf.Clamp01(Vector3.Dot(transform.forward, to.normalized));
             transform.position = ClampToArea(transform.position + transform.forward * (speed * facing * dt));
         }
 
-        // Закатываем краску у валика.
-        Vector3 rollerPos = rollerPivot.position;
+        // Закатываем краску у валика (раз в 0.1 с — оптимизация).
+        eraseTimer -= dt;
         chewTimer -= dt;
+        if (eraseTimer <= 0f)
+        {
+            eraseTimer = 0.1f;
+            EraseNearRoller();
+        }
+
+        PushPlayer();
+        LeaveTrail();
+        UpdateSlowTrail();
+        Animate(dt);
+    }
+
+    bool Erasable(PaintStroke s) => s != null && !s.IsErasing && !s.IsDecor && !s.IsGray && s.Count > 0;
+
+    PaintStroke FindPaint()
+    {
+        PaintStroke best = null;
+        float bestD = senseRadius;
+        Vector3 me = transform.position;
         foreach (var s in PaintStroke.All)
         {
-            if (s == null || s.IsErasing || s.Count == 0) continue;
+            if (!Erasable(s)) continue;
+            // Быстрая отсечка по границам мазка.
+            if (s.Bounds.SqrDistance(me) > senseRadius * senseRadius) continue;
+            Vector3 p = s.ClosestPoint(me);
+            if (p.y < floorY - 0.6f || p.y > floorY + eraseHeight) continue; // не достать
+            Vector3 reach = ClampToArea(p);
+            float d = Vector2.Distance(new Vector2(reach.x, reach.z), new Vector2(me.x, me.z))
+                      + Vector2.Distance(new Vector2(reach.x, reach.z), new Vector2(p.x, p.z)); // за краем платформы — дальше
+            if (d < bestD) { bestD = d; best = s; }
+        }
+        return best;
+    }
+
+    void EraseNearRoller()
+    {
+        Vector3 rollerPos = rollerPivot.position;
+        foreach (var s in PaintStroke.All)
+        {
+            if (!Erasable(s)) continue;
+            if (s.Bounds.SqrDistance(rollerPos) > (eraseReach + 0.5f) * (eraseReach + 0.5f)) continue;
             Vector3 p = s.ClosestPoint(rollerPos);
             Vector2 flat = new Vector2(p.x - rollerPos.x, p.z - rollerPos.z);
             if (flat.magnitude <= eraseReach && p.y >= floorY - 0.6f && p.y <= floorY + eraseHeight)
@@ -274,27 +383,70 @@ public class PaintEater : MonoBehaviour
                     ProcAudio.PlayAt(ProcAudio.Erase, p, 1f);
                     chewTimer = 0.25f;
                 }
-                break; // по одному мазку за кадр
+                return; // по одному мазку за раз
             }
         }
+    }
 
-        // Толкаем игрока.
-        if (player != null && hitCooldown <= 0f)
+    void PushPlayer()
+    {
+        if (player == null || hitCooldown > 0f) return;
+        Vector3 d = player.transform.position - transform.position;
+        if (Mathf.Abs(d.y) < 1.8f && new Vector2(d.x, d.z).magnitude < 1.25f)
         {
-            Vector3 d = player.transform.position - transform.position;
-            if (Mathf.Abs(d.y) < 1.8f && new Vector2(d.x, d.z).magnitude < 1.15f)
+            Vector3 away = new Vector3(d.x, 0f, d.z).normalized;
+            if (away.sqrMagnitude < 0.01f) away = transform.forward;
+            player.AddImpulse(away * pushForce + Vector3.up * 5f);
+            if (cameraRig != null) cameraRig.AddTrauma(0.7f);
+            ProcAudio.Play2D(ProcAudio.Hurt, 0.9f);
+            hitCooldown = 1.2f;
+            PlayerHit?.Invoke();
+        }
+    }
+
+    // Серый липкий след: каждые полметра — точка серой краски на полу. Старые куски следа тают.
+    void LeaveTrail()
+    {
+        Vector3 here = new Vector3(transform.position.x, floorY + 0.012f, transform.position.z);
+        if (trail != null && (here - lastTrailPos).sqrMagnitude < 0.5f * 0.5f) return;
+
+        if (trail == null || trail.Count >= 30)
+        {
+            var go = new GameObject("GrayTrail");
+            go.transform.SetParent(transform.parent, false);
+            var next = go.AddComponent<PaintStroke>();
+            next.Init(new Color(0.36f, 0.37f, 0.4f), StrokeStyle.Flat, 0f, false, 0.5f);
+            next.IsGray = true;
+            if (trail != null) next.AddPoint(lastTrailPos, Vector3.up, 1.0f); // без разрыва
+            trail = next;
+            trailStrokes.Enqueue(next);
+            if (trailStrokes.Count > 4)
             {
-                Vector3 away = new Vector3(d.x, 0f, d.z).normalized;
-                if (away.sqrMagnitude < 0.01f) away = transform.forward;
-                player.AddImpulse(away * pushForce + Vector3.up * 5f);
-                if (cameraRig != null) cameraRig.AddTrauma(0.7f);
-                ProcAudio.Play2D(ProcAudio.Hurt, 0.9f);
-                hitCooldown = 1.2f;
-                PlayerHit?.Invoke();
+                var old = trailStrokes.Dequeue();
+                if (old != null) old.Erase(2f);
             }
         }
+        trail.AddPoint(here, Vector3.up, 1.0f);
+        lastTrailPos = here;
+        trailPoints.Enqueue(here);
+        while (trailPoints.Count > 110) trailPoints.Dequeue();
+    }
 
-        Animate(dt);
+    // Игрок на сером следе идёт медленнее.
+    void UpdateSlowTrail()
+    {
+        if (player == null) return;
+        bool slow = false;
+        if (player.IsGrounded && Mathf.Abs(player.transform.position.y - floorY) < 0.3f)
+        {
+            Vector3 p = player.transform.position;
+            foreach (var t in trailPoints)
+            {
+                float dx = t.x - p.x, dz = t.z - p.z;
+                if (dx * dx + dz * dz < 0.5f * 0.5f) { slow = true; break; }
+            }
+        }
+        player.SpeedMultiplier = slow ? 0.55f : 1f;
     }
 
     void Animate(float dt)
@@ -317,9 +469,18 @@ public class PaintEater : MonoBehaviour
         body.localScale = new Vector3(1f + wobble * 0.03f, 1f - wobble * 0.025f, 1f + wobble * 0.03f);
         body.localPosition = new Vector3(0f, Mathf.Abs(Mathf.Cos(walkPhase)) * 0.06f * moving, 0f);
         head.localRotation = Quaternion.Euler(10f + Mathf.Sin(t * 1.7f) * 6f, Mathf.Sin(t * 0.9f) * 12f, Mathf.Sin(t * 1.3f) * 5f);
+        if (IsStunned)
+        {
+            // Ослеп: мотает головой, качается, поднятая рука трёт «лицо».
+            head.localRotation *= Quaternion.Euler(Mathf.Sin(t * 9f) * 10f, Mathf.Sin(t * 13f) * 25f, 0f);
+            body.localRotation = Quaternion.Euler(Mathf.Sin(t * 4f) * 5f, 0f, Mathf.Sin(t * 3f) * 7f);
+        }
+        else body.localRotation = Quaternion.identity;
 
         // Руки: поднятая покачивает валиком, нижняя катит.
-        armRaised.localRotation = Quaternion.Euler(-150f + Mathf.Sin(t * 1.4f) * 8f, 0f, -10f + Mathf.Sin(t * 0.8f) * 6f);
+        armRaised.localRotation = IsStunned
+            ? Quaternion.Euler(-120f + Mathf.Sin(t * 10f) * 15f, 0f, 25f)
+            : Quaternion.Euler(-150f + Mathf.Sin(t * 1.4f) * 8f, 0f, -10f + Mathf.Sin(t * 0.8f) * 6f);
         armDown.localRotation = Quaternion.Euler(-38f + sw * 6f, 0f, 8f);
 
         // Нижний валик крутится по пройденному пути.
@@ -339,7 +500,7 @@ public class PaintEater : MonoBehaviour
             Quaternion forward = e.pivot.parent.rotation;
             look = Quaternion.RotateTowards(forward, look, 55f);
             e.pivot.rotation = Quaternion.Slerp(e.pivot.rotation, look, 1f - Mathf.Exp(-(6f + i) * dt));
-            float blink = Mathf.Repeat(t + i * 0.73f, 3.7f + i * 0.3f) < 0.12f ? 0.15f : 1f;
+            float blink = IsStunned ? 0.12f : (Mathf.Repeat(t + i * 0.73f, 3.7f + i * 0.3f) < 0.12f ? 0.15f : 1f);
             e.pivot.localScale = new Vector3(1f, blink, 1f);
         }
 

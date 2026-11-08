@@ -9,6 +9,7 @@ public enum SprayMode
     Wall,          // стена: объёмное граффити, выступает из стены — на него можно встать
     Air,           // пусто: твёрдый мост в воздухе
     ExtendBridge,  // прицел на мосту: мост продолжается вперёд
+    Enemy,         // прицел на Закрасчике: краска в глаза — ослепляет
 }
 
 // Баллончик в руке. Пока зажата ЛКМ, рисует МАЗОК (PaintStroke) краской текущего баллона
@@ -44,6 +45,18 @@ public class PaintSpray : MonoBehaviour
     [Header("Краска")]
     [Tooltip("При этой ширине краска тратится ровно 1 секунда запаса за 1 секунду")]
     public float referenceWidth = 0.6f;
+
+    [Header("Давление")]
+    [Tooltip("Сколько давления уходит за секунду распыления")]
+    public float pressureDrain = 0.16f;
+    [Tooltip("Сколько давления возвращается за секунду, пока не жмёшь")]
+    public float pressureRegen = 0.35f;
+    [Tooltip("Ниже этого давления баллон «плюётся» — мазок с разрывами")]
+    public float sputterBelow = 0.22f;
+
+    [Header("Мазок: длина куска")]
+    [Tooltip("Длинный мазок делится на куски — меш не разрастается (оптимизация)")]
+    public int maxPointsPerStroke = 60;
 
     [Header("Луч")]
     public float range = 7f;
@@ -115,6 +128,13 @@ public class PaintSpray : MonoBehaviour
 
     // Появился новый кусок мазка: позиция, поворот, цвет (для облачка частиц).
     public event Action<Vector3, Quaternion, Color> SpotPlaced;
+    // Баллон встряхнули (F) — для анимации и звука.
+    public event Action Shaken;
+    // Распыление слышно: точка, куда летит краска (Закрасчик идёт проверить).
+    public static event Action<Vector3> SprayHeard;
+    public float Pressure => CurrentCan != null ? CurrentCan.pressure : 0f;
+    // Сейчас «плюётся» (давления мало) — для звука и анимации.
+    public bool IsSputtering { get; private set; }
     // Краска легла в точку (для спотов-тегов): позиция, нормаль поверхности, ширина, вид краски.
     public static event Action<Vector3, Vector3, float, SprayMode> PaintApplied;
 
@@ -127,6 +147,7 @@ public class PaintSpray : MonoBehaviour
         public Vector3 anchor;  // для ExtendBridge: куда попал луч на мосту
         public Vector3 aim;     // куда летит струя
         public PaintStroke hitStroke; // для ExtendBridge: мост под прицелом
+        public PaintEater enemy;      // для Enemy: в кого целимся
     }
 
     FirstPersonController controller;
@@ -179,12 +200,21 @@ public class PaintSpray : MonoBehaviour
         Ray aim = new Ray(cam.transform.position, cam.transform.forward);
         ComputeTarget(aim, can.type);
 
+        // Встряхнуть баллон: давление снова полное.
+        if (VandalzInput.ShakePressed())
+        {
+            can.pressure = 1f;
+            Shaken?.Invoke();
+        }
+
         bool held = VandalzInput.SprayHeld();
+        IsSputtering = false;
         if (!held || can.IsEmpty)
         {
             IsSprayingEmpty = held;
             EndStroke();
             HasPreview = !can.IsEmpty;
+            can.pressure = Mathf.Min(1f, can.pressure + pressureRegen * Time.deltaTime);
             return;
         }
 
@@ -201,6 +231,29 @@ public class PaintSpray : MonoBehaviour
         IsSpraying = true;
         // Широкий мазок тратит больше краски.
         can.paint = Mathf.Max(0f, can.paint - Time.deltaTime * target.width / referenceWidth);
+        can.pressure = Mathf.Max(0f, can.pressure - pressureDrain * Time.deltaTime);
+        SprayHeard?.Invoke(target.aim);
+
+        // Краска в глаза Закрасчику.
+        if (target.mode == SprayMode.Enemy)
+        {
+            if (target.enemy != null) target.enemy.Splash(Time.deltaTime, target.aim);
+            EndStrokeKeepActive();
+            return;
+        }
+
+        // Мало давления — баллон «плюётся»: краска ложится с разрывами.
+        if (can.pressure < sputterBelow)
+        {
+            float n = Mathf.PerlinNoise(Time.time * 9f, 0.37f);
+            if (n < 0.5f - can.pressure)
+            {
+                IsSputtering = true;
+                stroke = null; // разрыв мазка
+                hasPrevAim = false;
+                return;
+            }
+        }
 
         // Резкий взмах мышью: прицел за кадр мог уйти далеко. Проходим путь между прошлым
         // и текущим положением прицела мелкими шагами — линия идёт ровно по траектории взмаха.
@@ -214,7 +267,7 @@ public class PaintSpray : MonoBehaviour
             float f = k / (float)steps;
             var r = new Ray(Vector3.Lerp(prevAim.origin, aim.origin, f), Vector3.Slerp(prevAim.direction, aim.direction, f));
             ComputeTarget(r, can.type);
-            if (target.mode == SprayMode.None) { stroke = null; continue; } // промежуточная точка мимо — разрыв
+            if (target.mode == SprayMode.None || target.mode == SprayMode.Enemy) { stroke = null; continue; } // мимо — разрыв
             AddTarget(target, stepDt);
         }
         prevAim = aim;
@@ -239,6 +292,13 @@ public class PaintSpray : MonoBehaviour
         stroke = null;
     }
 
+    // Мазок прервать, но кнопка всё ещё зажата (например, целимся в Закрасчика).
+    void EndStrokeKeepActive()
+    {
+        stroke = null;
+        hasPrevAim = false;
+    }
+
     void EndStroke()
     {
         strokeActive = false;
@@ -249,8 +309,12 @@ public class PaintSpray : MonoBehaviour
 
     float WidthForDistance(float distance)
     {
-        return Mathf.Lerp(minWidth, maxWidth, Mathf.InverseLerp(nearDistance, farDistance, distance));
+        float w = Mathf.Lerp(minWidth, maxWidth, Mathf.InverseLerp(nearDistance, farDistance, distance));
+        return w * PressureScale;
     }
+
+    // Чем меньше давление, тем тоньше мазок.
+    float PressureScale => Mathf.Lerp(0.55f, 1f, Mathf.Clamp01(Pressure / 0.6f));
 
     // ---------- Куда целимся ----------
 
@@ -261,7 +325,18 @@ public class PaintSpray : MonoBehaviour
 
         var t = new Target { mode = SprayMode.None };
 
-        if (canType == CanType.Regular)
+        // Прицел на Закрасчике — любой баллон бьёт ему в глаза.
+        PaintEater eater = hasSurface ? sh.collider.GetComponentInParent<PaintEater>() : null;
+        if (eater != null)
+        {
+            t.mode = SprayMode.Enemy;
+            t.enemy = eater;
+            t.pos = sh.point;
+            t.normal = sh.normal;
+            t.aim = sh.point;
+            t.width = minWidth;
+        }
+        else if (canType == CanType.Regular)
         {
             // Обычный баллон: только поверхности.
             if (hasSurface)
@@ -385,6 +460,16 @@ public class PaintSpray : MonoBehaviour
 
         Vector3 pos = onSurface ? t.pos + t.normal * SurfaceOffset() : t.pos;
         if (kind == SprayMode.Air && stroke != null && strokeKind == SprayMode.Air) pos = SmoothBridge(pos, dt);
+
+        // Длинный мазок продолжаем новым куском (меш не разрастается). Новый кусок начинаем
+        // с последней точки старого — линия остаётся непрерывной.
+        if (stroke != null && stroke.Count >= maxPointsPerStroke && kind == strokeKind && (pos - lastPos).magnitude >= minSegment)
+        {
+            Vector3 joinPos = lastPos, joinNormal = lastNormal;
+            float joinWidth = lastWidth;
+            BeginStroke(kind);
+            if (!AppendPoint(joinPos, joinNormal, joinWidth)) { DropStroke(); return; }
+        }
 
         bool needNew = stroke == null
                        || kind != strokeKind

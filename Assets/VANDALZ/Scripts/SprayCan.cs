@@ -16,6 +16,9 @@ public class SprayCan
     [Tooltip("Сколько секунд распыления в полном баллоне")]
     public float capacity;
     public float paint;
+    // Давление 0..1: падает при долгом распылении (мазок тоньше, «плюётся»),
+    // само восстанавливается, а встряхивание (F) возвращает его сразу.
+    public float pressure = 1f;
 
     public SprayCan(CanType type, Color color, float capacity)
     {

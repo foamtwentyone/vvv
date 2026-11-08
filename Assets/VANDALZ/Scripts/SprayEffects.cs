@@ -67,6 +67,7 @@ public class SprayEffects : MonoBehaviour
         BuildAudio();
 
         spray.SpotPlaced += OnSpotPlaced;
+        spray.Shaken += OnShaken;
         if (controller != null)
         {
             controller.Jumped += OnJumped;
@@ -76,12 +77,20 @@ public class SprayEffects : MonoBehaviour
 
     void OnDestroy()
     {
-        if (spray != null) spray.SpotPlaced -= OnSpotPlaced;
+        if (spray != null) { spray.SpotPlaced -= OnSpotPlaced; spray.Shaken -= OnShaken; }
         if (controller != null)
         {
             controller.Jumped -= OnJumped;
             controller.Landed -= OnLanded;
         }
+    }
+
+    // Встряхнули баллон (F): анимация и дребезг шарика. Давление восстанавливает PaintSpray.
+    void OnShaken()
+    {
+        if (shownCan == null) return;
+        shakeT = 0f;
+        ProcAudio.Play2D(ProcAudio.Rattle, 0.7f);
     }
 
     void OnJumped() => kickVelocity += 0.9f;
@@ -90,7 +99,7 @@ public class SprayEffects : MonoBehaviour
     void LateUpdate()
     {
         float dt = Time.deltaTime;
-        bool spraying = spray.IsSpraying;
+        bool spraying = spray.IsSpraying && !spray.IsSputtering;
         Color color = spray.CurrentColor;
 
         UpdateGhost(color, spraying);
@@ -127,7 +136,7 @@ public class SprayEffects : MonoBehaviour
 
     void UpdateGhost(Color color, bool spraying)
     {
-        bool visible = showPreview && spray.HasPreview && spray.PreviewMode != SprayMode.None;
+        bool visible = showPreview && spray.HasPreview && spray.PreviewMode != SprayMode.None && spray.PreviewMode != SprayMode.Enemy;
         ghost.gameObject.SetActive(visible);
         if (!visible) return;
 
@@ -219,12 +228,6 @@ public class SprayEffects : MonoBehaviour
         }
         can.gameObject.SetActive(shownCan != null);
 
-        // Встряхивание (F).
-        if (VandalzInput.ShakePressed() && shownCan != null && spray.InputEnabled && Cursor.lockState == CursorLockMode.Locked && shakeT >= 1f)
-        {
-            shakeT = 0f;
-            ProcAudio.Play2D(ProcAudio.Rattle, 0.7f);
-        }
         if (shakeT < 1f) shakeT = Mathf.Min(1f, shakeT + dt / 0.6f);
 
         float k = 1f - Mathf.Exp(-14f * dt);
@@ -386,6 +389,7 @@ public class SprayEffects : MonoBehaviour
         hissLevel = Mathf.MoveTowards(hissLevel, target, speed * dt);
 
         float vol = hissLevel * hissVolume;
+        if (spray.IsSputtering) vol *= 0.15f; // «плюётся»: шипение прерывается
         // Когда краски мало — шипение «кашляет».
         if (spraying && spray.Paint01 < 0.2f)
             vol *= Mathf.PerlinNoise(Time.time * 12f, 3.7f) > 0.45f ? 1f : 0.25f;

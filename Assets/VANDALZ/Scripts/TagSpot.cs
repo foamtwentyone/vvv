@@ -23,6 +23,7 @@ public class TagSpot : MonoBehaviour
     readonly bool[,] cells = new bool[GridX, GridY];
     int covered, total = GridX * GridY;
 
+    int shownPercent = -1;
     LineRenderer frame;
     Material frameMaterial;
     TextMesh label;
@@ -175,7 +176,13 @@ public class TagSpot : MonoBehaviour
         c.a *= pulse;
         frame.startColor = frame.endColor = c;
         frameMaterial.mainTextureOffset = new Vector2(Completed ? 0f : -Time.time * 0.8f, 0f);
-        if (label != null && !Completed) label.text = title + (p > 0f ? $"  {Mathf.RoundToInt(p * 100f)}%" : "");
+        // Текст меняем, только когда меняется процент (без мусора каждый кадр).
+        int percent = Mathf.RoundToInt(p * 100f);
+        if (label != null && !Completed && percent != shownPercent)
+        {
+            shownPercent = percent;
+            label.text = title + (percent > 0 ? $"  {percent}%" : "");
+        }
     }
 
     static Texture2D MakeDashTexture()
@@ -194,6 +201,8 @@ public class TagSpot : MonoBehaviour
         Array.Clear(cells, 0, cells.Length);
         covered = 0;
         Completed = false;
+        shownPercent = -1;
+        if (label != null) label.text = title;
         glow.color = new Color(0.8f, 0.9f, 1f);
         glow.intensity = 0.6f;
     }
