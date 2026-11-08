@@ -55,7 +55,9 @@ public class PaintSpray : MonoBehaviour
     [Tooltip("Новая точка мазка — не ближе этого к предыдущей")]
     public float minSegment = 0.15f;
     [Tooltip("Если прицел прыгнул дальше — начинается новый мазок")]
-    public float maxSegment = 1.0f;
+    public float maxSegment = 1.5f;
+    [Tooltip("При резком взмахе путь прицела проходится шагами не больше этого угла")]
+    public float maxAimStepDegrees = 1.5f;
     [Tooltip("Если поверхность повернулась сильнее (угол стены) — начинается новый мазок")]
     public float maxNormalTurn = 35f;
     [Tooltip("На сколько (в долях ширины) мост вырастает вперёд, когда целишься в его край")]
@@ -140,6 +142,8 @@ public class PaintSpray : MonoBehaviour
     Vector3 lastPos, lastNormal, lastDir;
     float lastWidth;
     Vector3 brushPos; // «кисть» моста — плавно догоняет прицел
+    Ray prevAim;      // прицел в прошлом кадре (для резких взмахов)
+    bool hasPrevAim;
 
     bool dripAnchorValid;
     Vector3 dripAnchor;
@@ -168,7 +172,8 @@ public class PaintSpray : MonoBehaviour
             return;
         }
 
-        ComputeTarget();
+        Ray aim = new Ray(cam.transform.position, cam.transform.forward);
+        ComputeTarget(aim);
 
         bool held = VandalzInput.SprayHeld();
         if (!held || Paint <= 0f)
@@ -186,7 +191,23 @@ public class PaintSpray : MonoBehaviour
         // Широкий мазок тратит больше краски.
         Paint = Mathf.Max(0f, Paint - Time.deltaTime * target.width / referenceWidth);
 
-        AddTarget(target);
+        // Резкий взмах мышью: прицел за кадр мог уйти далеко. Проходим путь между прошлым
+        // и текущим положением прицела мелкими шагами — линия идёт ровно по траектории взмаха.
+        if (!hasPrevAim) prevAim = aim;
+        float angle = Vector3.Angle(prevAim.direction, aim.direction);
+        float moved = Vector3.Distance(prevAim.origin, aim.origin);
+        int steps = Mathf.Clamp(Mathf.CeilToInt(Mathf.Max(angle / maxAimStepDegrees, moved / 0.1f)), 1, 24);
+        float stepDt = Time.deltaTime / steps;
+        for (int k = 1; k <= steps; k++)
+        {
+            float f = k / (float)steps;
+            var r = new Ray(Vector3.Lerp(prevAim.origin, aim.origin, f), Vector3.Slerp(prevAim.direction, aim.direction, f));
+            ComputeTarget(r);
+            AddTarget(target, stepDt);
+        }
+        prevAim = aim;
+        hasPrevAim = true;
+
         UpdateDrip();
     }
 
@@ -210,6 +231,7 @@ public class PaintSpray : MonoBehaviour
     void EndStroke()
     {
         strokeActive = false;
+        hasPrevAim = false;
         stroke = null;
         dripAnchorValid = false;
     }
@@ -221,10 +243,8 @@ public class PaintSpray : MonoBehaviour
 
     // ---------- Куда целимся ----------
 
-    void ComputeTarget()
+    void ComputeTarget(Ray ray)
     {
-        Transform camT = cam.transform;
-        Ray ray = new Ray(camT.position, camT.forward);
         int surfaceMask = ~((1 << PlayerLayer) | (1 << PaintLayer));
 
         bool hasSurface = Physics.Raycast(ray, out RaycastHit sh, range, surfaceMask, QueryTriggerInteraction.Ignore);
@@ -233,7 +253,7 @@ public class PaintSpray : MonoBehaviour
         // «Уровень моста»: высота ног, а пока рисуем мост — высота его последней точки.
         // Над пустотой мост ложится на этот уровень, а не туда, куда смотрит камера.
         bool drawingBridge = strokeActive && stroke != null && strokeKind == SprayMode.Air && stroke.Count > 0;
-        float feetY = controller != null ? controller.transform.position.y : camT.position.y - 1.6f;
+        float feetY = controller != null ? controller.transform.position.y : ray.origin.y - 1.6f;
         float planeY = drawingBridge ? lastPos.y : feetY;
         bool hasPlane = false;
         float planeDist = 0f;
@@ -322,7 +342,7 @@ public class PaintSpray : MonoBehaviour
 
     // ---------- Рисование ----------
 
-    void AddTarget(Target t)
+    void AddTarget(Target t, float dt)
     {
         SprayMode kind = t.mode == SprayMode.ExtendBridge ? SprayMode.Air : t.mode;
         bool onSurface = kind == SprayMode.Surface || kind == SprayMode.Wall;
@@ -333,7 +353,7 @@ public class PaintSpray : MonoBehaviour
             ContinueStroke(t.hitStroke);
 
         Vector3 pos = onSurface ? t.pos + t.normal * SurfaceOffset() : t.pos;
-        if (kind == SprayMode.Air && stroke != null && strokeKind == SprayMode.Air) pos = SmoothBridge(pos);
+        if (kind == SprayMode.Air && stroke != null && strokeKind == SprayMode.Air) pos = SmoothBridge(pos, dt);
 
         bool needNew = stroke == null
                        || kind != strokeKind
@@ -372,9 +392,9 @@ public class PaintSpray : MonoBehaviour
     }
 
     // Мост: точка плавно догоняет прицел и не поднимается/опускается круче maxBridgeSlope.
-    Vector3 SmoothBridge(Vector3 raw)
+    Vector3 SmoothBridge(Vector3 raw, float dt)
     {
-        brushPos = Vector3.Lerp(brushPos, raw, 1f - Mathf.Exp(-bridgeSmoothing * Time.deltaTime));
+        brushPos = Vector3.Lerp(brushPos, raw, 1f - Mathf.Exp(-bridgeSmoothing * dt));
         Vector3 p = brushPos;
         if (stroke.Count > 0)
         {
