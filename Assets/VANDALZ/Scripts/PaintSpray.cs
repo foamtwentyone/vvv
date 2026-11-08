@@ -1,4 +1,6 @@
+using System;
 using UnityEngine;
+using Random = UnityEngine.Random;
 
 // Баллончик. Пока зажата ЛКМ:
 //  - луч из центра камеры попал в поверхность ближе range  -> пятно на поверхности;
@@ -6,6 +8,8 @@ using UnityEngine;
 //  - луч ни во что не попал -> пятно застывает в воздухе в airDistance перед камерой.
 // Пятна сами имеют коллайдер, поэтому луч попадает и в них — мост «растёт» от краски:
 // попал в верх пятна -> новое пятно вплотную, в той же плоскости, чуть дальше по взгляду.
+//
+// Место будущего пятна считается каждый кадр (Preview*) — его рисует SprayEffects.
 public class PaintSpray : MonoBehaviour
 {
     public Camera cam;
@@ -31,7 +35,23 @@ public class PaintSpray : MonoBehaviour
     public float Paint { get; private set; }
     public float Paint01 => maxPaintSeconds > 0f ? Paint / maxPaintSeconds : 0f;
     public bool IsSpraying { get; private set; }
+    // ЛКМ зажата, но краска кончилась — для «пустого» звука.
+    public bool IsSprayingEmpty { get; private set; }
     public int SpotCount { get; private set; }
+
+    // Где появится следующее пятно (для подсказки).
+    public bool HasPreview { get; private set; }
+    public Vector3 PreviewPosition { get; private set; }
+    public Quaternion PreviewRotation { get; private set; }
+    public bool PreviewInAir { get; private set; }
+    public bool PreviewBlocked { get; private set; }
+    // Куда летит краска (точка попадания луча или место пятна в воздухе).
+    public Vector3 AimPoint { get; private set; }
+    // Цвет текущего мазка, а если не рисуем — цвет следующего.
+    public Color CurrentColor => palette[(strokeActive ? strokeIndex - 1 : strokeIndex) % palette.Length];
+
+    // Вызывается при появлении каждого пятна: позиция, поворот, цвет.
+    public event Action<Vector3, Quaternion, Color> SpotPlaced;
 
     static readonly Color[] palette =
     {
@@ -65,22 +85,31 @@ public class PaintSpray : MonoBehaviour
     void Update()
     {
         IsSpraying = false;
+        IsSprayingEmpty = false;
+        HasPreview = false;
 
-        bool wantsSpray = VandalzInput.SprayHeld()
-                          && Cursor.lockState == CursorLockMode.Locked
-                          && Paint > 0f
-                          && cam != null;
-
-        if (!wantsSpray)
+        bool locked = Cursor.lockState == CursorLockMode.Locked;
+        if (cam == null || !locked)
         {
-            strokeActive = false;
-            hasLastSpot = false;
+            EndStroke();
+            return;
+        }
+
+        ComputePlacement();
+
+        bool held = VandalzInput.SprayHeld();
+        if (!held || Paint <= 0f)
+        {
+            IsSprayingEmpty = held;
+            EndStroke();
+            HasPreview = Paint > 0f;
             return;
         }
 
         if (!strokeActive) StartStroke();
 
         IsSpraying = true;
+        HasPreview = true;
         Paint = Mathf.Max(0f, Paint - Time.deltaTime);
 
         if (Time.time >= nextSpawnTime) TryPlaceSpot();
@@ -94,16 +123,25 @@ public class PaintSpray : MonoBehaviour
         strokeIndex++;
     }
 
-    void TryPlaceSpot()
+    void EndStroke()
+    {
+        strokeActive = false;
+        hasLastSpot = false;
+    }
+
+    // Считает, где и как встанет пятно, если распылить прямо сейчас.
+    void ComputePlacement()
     {
         Transform camT = cam.transform;
         Ray ray = new Ray(camT.position, camT.forward);
 
         Vector3 pos;
         Quaternion rot;
+        PreviewInAir = false;
 
         if (Physics.Raycast(ray, out RaycastHit hit, range, rayMask, QueryTriggerInteraction.Ignore))
         {
+            AimPoint = hit.point;
             Vector3 n = hit.normal;
             if (Mathf.Abs(n.y) < 0.5f)
             {
@@ -125,7 +163,7 @@ public class PaintSpray : MonoBehaviour
             {
                 // Пол, потолок: плоское пятно по поверхности.
                 pos = hit.point + n * (spotThickness * 0.5f);
-                rot = Quaternion.FromToRotation(Vector3.up, n) * Quaternion.Euler(0f, Random.Range(0f, 360f), 0f);
+                rot = Quaternion.FromToRotation(Vector3.up, n);
             }
         }
         else
@@ -133,20 +171,34 @@ public class PaintSpray : MonoBehaviour
             // Пусто: пятно застывает в воздухе, горизонтально, повёрнуто по взгляду.
             pos = ray.origin + ray.direction * airDistance;
             rot = Quaternion.Euler(0f, camT.eulerAngles.y, 0f);
+            AimPoint = pos;
+            PreviewInAir = true;
         }
 
-        if (hasLastSpot && (pos - lastSpotPos).sqrMagnitude < minSpacing * minSpacing) return;
+        PreviewPosition = pos;
+        PreviewRotation = rot;
 
-        float diameter = spotDiameter * Random.Range(0.9f, 1.15f);
         // Не создаём пятно внутри игрока — иначе он застрянет.
         // По высоте коробку чуть уменьшаем: пятно вровень с полом под ногами — это нормально.
-        Vector3 halfExtents = new Vector3(diameter * 0.5f, spotThickness * 0.5f - 0.03f, diameter * 0.5f);
-        if (Physics.CheckBox(pos, halfExtents, rot, 1 << PlayerLayer, QueryTriggerInteraction.Ignore)) return;
+        Vector3 halfExtents = new Vector3(spotDiameter * 0.55f, spotThickness * 0.5f - 0.03f, spotDiameter * 0.55f);
+        PreviewBlocked = Physics.CheckBox(pos, halfExtents, rot, 1 << PlayerLayer, QueryTriggerInteraction.Ignore);
+    }
+
+    void TryPlaceSpot()
+    {
+        if (PreviewBlocked) return;
+        Vector3 pos = PreviewPosition;
+        if (hasLastSpot && (pos - lastSpotPos).sqrMagnitude < minSpacing * minSpacing) return;
+
+        // Случайный поворот вокруг нормали — чтобы пятна не выглядели одинаково.
+        Quaternion rot = PreviewRotation * Quaternion.Euler(0f, Random.Range(-25f, 25f), 0f);
+        float diameter = spotDiameter * Random.Range(0.9f, 1.1f);
 
         SpawnSpot(pos, rot, diameter);
         lastSpotPos = pos;
         hasLastSpot = true;
         nextSpawnTime = Time.time + spawnInterval;
+        SpotPlaced?.Invoke(pos, rot, strokeMaterial.color);
     }
 
     // Стереть все пятна и заполнить баллончик (рестарт уровня).
@@ -155,8 +207,7 @@ public class PaintSpray : MonoBehaviour
         foreach (Transform child in spotsRoot) Destroy(child.gameObject);
         SpotCount = 0;
         Paint = maxPaintSeconds;
-        strokeActive = false;
-        hasLastSpot = false;
+        EndStroke();
     }
 
     void SpawnSpot(Vector3 pos, Quaternion rot, float diameter)

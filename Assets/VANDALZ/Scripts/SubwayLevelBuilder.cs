@@ -128,6 +128,9 @@ public class SubwayLevelBuilder : MonoBehaviour
         spray = playerGo.AddComponent<PaintSpray>();
         spray.cam = cam;
 
+        // Подсказка, частицы, звук, баллончик в руке. Можно выключить — логика не пострадает.
+        playerGo.AddComponent<SprayEffects>();
+
         return fpc;
     }
 
