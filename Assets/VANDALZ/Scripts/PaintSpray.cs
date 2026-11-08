@@ -17,7 +17,8 @@ public enum SprayMode
 //  - стена                      -> объёмное граффити, выступает из стены на wallDepth.
 //                                  Что нарисовал, то и получил: горизонтальная линия — полка,
 //                                  диагональ — пандус, зигзаг — ступеньки;
-//  - пусто                      -> мост: твёрдая лента в воздухе в airDistance перед камерой;
+//  - пусто под прицелом         -> мост на уровне ног (луч пересекает уровень ног над пустотой);
+//                                  смотришь выше горизонта — мост плавно поднимается пандусом;
 //  - верх моста                 -> мост продолжается вперёд по взгляду.
 //
 // Краска лежит на отдельном слое PaintLayer. Луч для поверхностей проходит сквозь краску,
@@ -229,10 +230,24 @@ public class PaintSpray : MonoBehaviour
         bool hasSurface = Physics.Raycast(ray, out RaycastHit sh, range, surfaceMask, QueryTriggerInteraction.Ignore);
         bool hasPaint = Physics.Raycast(ray, out RaycastHit ph, range, 1 << PaintLayer, QueryTriggerInteraction.Ignore);
 
+        // «Уровень моста»: высота ног, а пока рисуем мост — высота его последней точки.
+        // Над пустотой мост ложится на этот уровень, а не туда, куда смотрит камера.
+        bool drawingBridge = strokeActive && stroke != null && strokeKind == SprayMode.Air && stroke.Count > 0;
+        float feetY = controller != null ? controller.transform.position.y : camT.position.y - 1.6f;
+        float planeY = drawingBridge ? lastPos.y : feetY;
+        bool hasPlane = false;
+        float planeDist = 0f;
+        if (ray.direction.y < -0.01f)
+        {
+            planeDist = (planeY - ray.origin.y) / ray.direction.y;
+            hasPlane = planeDist > 0f && planeDist <= range;
+        }
+
         var t = new Target { mode = SprayMode.None };
 
         // Прицел на верхе моста (и мост ближе поверхности) — продолжаем мост.
-        if (hasPaint && (!hasSurface || ph.distance <= sh.distance) && ph.normal.y > 0.5f && IsBridge(ph.collider))
+        if (hasPaint && (!hasSurface || ph.distance <= sh.distance) && (!hasPlane || ph.distance <= planeDist + 0.1f)
+            && ph.normal.y > 0.5f && IsBridge(ph.collider))
         {
             Vector3 along = Vector3.ProjectOnPlane(ray.direction, ph.normal);
             if (along.sqrMagnitude > 0.01f)
@@ -247,6 +262,16 @@ public class PaintSpray : MonoBehaviour
             }
         }
 
+        // Луч пересекает уровень моста раньше, чем во что-то упирается (под ним пустота) — мост.
+        if (t.mode == SprayMode.None && hasPlane && (!hasSurface || sh.distance > planeDist + 0.05f))
+        {
+            t.mode = SprayMode.Air;
+            t.normal = Vector3.up;
+            t.width = airWidth;
+            t.pos = ray.origin + ray.direction * planeDist;
+            t.aim = t.pos;
+        }
+
         if (t.mode == SprayMode.None)
         {
             if (hasSurface)
@@ -259,10 +284,13 @@ public class PaintSpray : MonoBehaviour
             }
             else
             {
+                // Смотрим выше уровня моста и ни во что не попали: точка в airDistance по взгляду,
+                // не ниже уровня моста (при рисовании моста уклон всё равно ограничит SmoothBridge — получится пандус).
                 t.mode = SprayMode.Air;
                 t.normal = Vector3.up;
                 t.width = airWidth;
                 t.pos = ray.origin + ray.direction * airDistance;
+                if (drawingBridge) t.pos = new Vector3(t.pos.x, Mathf.Max(t.pos.y, planeY), t.pos.z);
                 t.aim = t.pos;
             }
         }
