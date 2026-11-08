@@ -6,16 +6,17 @@ public enum SprayMode
 {
     None,
     Surface,       // пол / потолок: плоское граффити
-    Wall,          // стена: граффити + узкий уступ под линией
+    Wall,          // стена: объёмное граффити, выступает из стены — на него можно встать
     Air,           // пусто: твёрдый мост в воздухе
     ExtendBridge,  // прицел на мосту: мост продолжается вперёд
 }
 
-// Баллончик. Пока зажата ЛКМ, рисует МАЗОК — плоскую ленту с мягкими краями (PaintStroke).
+// Баллончик. Пока зажата ЛКМ, рисует МАЗОК (PaintStroke). Твёрдое — само граффити:
 //
-//  - пол / потолок ближе range  -> граффити на поверхности (просто краска);
-//  - стена                      -> граффити на стене + узкий уступ под линией, на нём можно стоять;
-//                                  вертикальная линия по стене = лесенка уступов;
+//  - пол / потолок ближе range  -> плоское граффити;
+//  - стена                      -> объёмное граффити, выступает из стены на wallDepth.
+//                                  Что нарисовал, то и получил: горизонтальная линия — полка,
+//                                  диагональ — пандус, зигзаг — ступеньки;
 //  - пусто                      -> мост: твёрдая лента в воздухе в airDistance перед камерой;
 //  - верх моста                 -> мост продолжается вперёд по взгляду.
 //
@@ -23,8 +24,8 @@ public enum SprayMode
 // поэтому краска не «нарастает» на саму себя навстречу игроку.
 //
 // Ширина граффити зависит от дистанции (близко — узко), широкий мазок тратит больше краски.
-// Свежая краска мокрая: мост проседает под игроком и застывает за dryTime (PaintSpot).
-// Если подержать баллончик на одном месте стены, вниз стекает подтёк (DripRunner).
+// Свежая краска мокрая: проседает под игроком и застывает за dryTime (PaintSpot).
+// Если подержать баллончик на одном месте стены, вниз стекает подтёк с каплей (DripRunner).
 public class PaintSpray : MonoBehaviour
 {
     public Camera cam;
@@ -59,12 +60,9 @@ public class PaintSpray : MonoBehaviour
     [Tooltip("На сколько (в долях ширины) мост вырастает вперёд, когда целишься в его край")]
     public float growStep = 0.45f;
 
-    [Header("Уступы на стенах")]
-    public float ledgeDepth = 0.35f;
-    public float ledgeThickness = 0.06f;
-    [Tooltip("Шаг уступов, когда ведёшь баллончиком по стене вверх/вниз")]
-    public float ladderStep = 0.5f;
-    public float ladderLedgeWidth = 0.45f;
+    [Header("Граффити на стене")]
+    [Tooltip("Насколько граффити выступает из стены (на нём можно стоять)")]
+    public float wallDepth = 0.3f;
 
     [Header("Застывание")]
     public float dryTime = 2.5f;
@@ -78,6 +76,7 @@ public class PaintSpray : MonoBehaviour
     public float dripInterval = 0.3f;
     public int dripMaxSteps = 5;
     public float dripWidth = 0.12f;
+    public float dropWidth = 0.32f;
 
     public const int PlayerLayer = 2; // встроенный "Ignore Raycast" — на нём игрок
     public const int PaintLayer = 8;  // первый свободный слой; в Tags & Layers можно назвать его "Paint"
@@ -133,8 +132,7 @@ public class PaintSpray : MonoBehaviour
     SprayMode strokeKind;
     int strokeSerial;
     Vector3 lastPos, lastNormal;
-    bool hasLastLedge;
-    Vector3 lastLedgePos;
+    float lastWidth;
 
     bool dripAnchorValid;
     Vector3 dripAnchor;
@@ -271,8 +269,12 @@ public class PaintSpray : MonoBehaviour
                 PreviewBlocked = OverlapsPlayer(t.pos - t.normal * (bridgeThickness * 0.5f),
                     Quaternion.FromToRotation(Vector3.up, t.normal), new Vector3(t.width, bridgeThickness, t.width));
                 break;
+            case SprayMode.Wall:
+                PreviewBlocked = OverlapsPlayer(t.pos + t.normal * (wallDepth * 0.5f),
+                    Quaternion.LookRotation(WallUp(t.normal), t.normal), new Vector3(t.width, wallDepth, t.width));
+                break;
             default:
-                PreviewBlocked = false; // граффити на поверхности ничему не мешает
+                PreviewBlocked = false; // граффити на полу ничему не мешает
                 break;
         }
     }
@@ -280,7 +282,7 @@ public class PaintSpray : MonoBehaviour
     static bool IsBridge(Collider c)
     {
         var spot = c.GetComponent<PaintSpot>();
-        return spot != null && spot.Stroke != null && spot.Stroke.Solid;
+        return spot != null && spot.Stroke != null && spot.Stroke.Style == StrokeStyle.Bridge;
     }
 
     // ---------- Рисование ----------
@@ -303,13 +305,20 @@ public class PaintSpray : MonoBehaviour
             // Продолжение моста начинаем с точки, куда попал луч, — чтобы новая лента примыкала к старой.
             if (t.mode == SprayMode.ExtendBridge && !AppendPoint(t.anchor, t.normal, t.width))
             {
-                stroke = null;
+                DropStroke();
                 return;
             }
         }
 
         if (stroke.Count > 0 && (pos - lastPos).magnitude < minSegment) return;
-        if (!AppendPoint(pos, t.normal, t.width)) stroke = null; // мешает игрок — начнём заново
+        if (!AppendPoint(pos, t.normal, t.width)) DropStroke(); // мешает игрок — начнём заново
+    }
+
+    // Мазок прерван; пустой — удаляем, чтобы не копились лишние объекты.
+    void DropStroke()
+    {
+        if (stroke != null && stroke.Count == 0) Destroy(stroke.gameObject);
+        stroke = null;
     }
 
     void BeginStroke(SprayMode kind)
@@ -317,10 +326,14 @@ public class PaintSpray : MonoBehaviour
         var go = new GameObject(kind == SprayMode.Air ? "PaintBridge" : "PaintStroke");
         go.transform.SetParent(paintRoot, false);
         stroke = go.AddComponent<PaintStroke>();
-        stroke.Init(strokeColor, kind == SprayMode.Air, dryTime);
+        switch (kind)
+        {
+            case SprayMode.Air: stroke.Init(strokeColor, StrokeStyle.Bridge, bridgeThickness, true, dryTime); break;
+            case SprayMode.Wall: stroke.Init(strokeColor, StrokeStyle.Raised, wallDepth, true, dryTime); break;
+            default: stroke.Init(strokeColor, StrokeStyle.Flat, 0f, false, dryTime); break;
+        }
         strokeKind = kind;
         strokeSerial++;
-        hasLastLedge = false;
     }
 
     // Разные мазки чуть на разной высоте над поверхностью — чтобы не мерцали друг сквозь друга.
@@ -330,8 +343,8 @@ public class PaintSpray : MonoBehaviour
     {
         if (stroke.Count == 0)
         {
-            if (strokeKind == SprayMode.Air && !CreateBridgePad(pos, normal, width)) return false;
-            if (strokeKind == SprayMode.Wall) TryLadderLedge(pos, normal, true);
+            if (strokeKind == SprayMode.Air && !CreatePad(pos - normal * (bridgeThickness * 0.5f), normal, width, bridgeThickness)) return false;
+            if (strokeKind == SprayMode.Wall && !CreatePad(pos + normal * (wallDepth * 0.5f), normal, width, wallDepth)) return false;
             Commit(pos, normal, width);
             return true;
         }
@@ -349,13 +362,11 @@ public class PaintSpray : MonoBehaviour
                     if (facing.sqrMagnitude < 1e-4f) return false;
                     normal = facing.normalized;
                 }
-                if (!CreateBridgeSegment(lastPos, pos, normal, width)) return false;
+                if (!CreateSegment(lastPos, pos, normal, (lastWidth + width) * 0.5f, -bridgeThickness)) return false;
                 break;
 
             case SprayMode.Wall:
-                bool steep = Mathf.Abs(d.y) > 0.6f * len;
-                if (steep) TryLadderLedge(pos, normal, false);
-                else CreateWallLedge(lastPos, pos, normal);
+                if (!CreateSegment(lastPos, pos, normal, (lastWidth + width) * 0.5f, wallDepth)) return false;
                 break;
         }
 
@@ -367,25 +378,35 @@ public class PaintSpray : MonoBehaviour
     {
         stroke.AddPoint(pos, normal, width);
         lastPos = pos;
+        lastWidth = width;
         lastNormal = normal;
         SpotPlaced?.Invoke(pos, Quaternion.FromToRotation(Vector3.up, normal), strokeColor);
     }
 
-    // ---------- Твёрдые куски ----------
+    // ---------- Твёрдые куски (невидимые коллайдеры под мазком) ----------
 
-    // Квадратная плита под первой точкой моста (одиночный «пшик» в воздухе тоже держит).
-    bool CreateBridgePad(Vector3 top, Vector3 up, float width)
+    // «Вверх» в плоскости стены (для ориентации одиночной точки).
+    static Vector3 WallUp(Vector3 normal)
     {
-        Quaternion rot = Quaternion.FromToRotation(Vector3.up, up);
-        Vector3 center = top - up * (bridgeThickness * 0.5f);
-        Vector3 size = new Vector3(width * 0.8f, bridgeThickness, width * 0.8f);
+        Vector3 up = Vector3.ProjectOnPlane(Vector3.up, normal);
+        return up.sqrMagnitude > 1e-4f ? up.normalized : Vector3.ProjectOnPlane(Vector3.forward, normal).normalized;
+    }
+
+    // Плита под одиночной точкой (короткий «пшик» тоже твёрдый). center — центр плиты.
+    bool CreatePad(Vector3 center, Vector3 normal, float width, float depth)
+    {
+        Quaternion rot = Quaternion.LookRotation(WallUp(normal), normal); // локальная Y — по нормали
+        Vector3 size = new Vector3(width * 0.84f, depth, width * 0.84f);
         if (OverlapsPlayer(center, rot, size)) return false;
-        CreateSolid(center, rot, size, false, strokeColor).Stroke = stroke;
+        var spot = CreateSolid(center, rot, size);
+        spot.Stroke = stroke;
+        stroke.AddPad(spot);
         return true;
     }
 
-    // Невидимая плита под отрезком моста.
-    bool CreateBridgeSegment(Vector3 a, Vector3 b, Vector3 normal, float width)
+    // Плита под отрезком мазка. depth > 0 — выступает из поверхности по нормали (стена),
+    // depth < 0 — уходит вниз от верха (мост).
+    bool CreateSegment(Vector3 a, Vector3 b, Vector3 normal, float width, float depth)
     {
         Vector3 d = b - a;
         float len = d.magnitude;
@@ -393,77 +414,50 @@ public class PaintSpray : MonoBehaviour
         if (up.sqrMagnitude < 1e-4f) return false;
         up.Normalize();
 
-        Quaternion rot = Quaternion.LookRotation(d / len, up);
-        Vector3 center = (a + b) * 0.5f - up * (bridgeThickness * 0.5f);
-        Vector3 size = new Vector3(width, bridgeThickness, len + 0.05f); // чуть длиннее — без щелей
+        Quaternion rot = Quaternion.LookRotation(d / len, up); // локальная Y — по нормали, Z — вдоль мазка
+        Vector3 center = (a + b) * 0.5f + up * (depth * 0.5f);
+        // Ширина — твёрдая часть мазка (мягкие края текстуры свисают), длина чуть больше — без щелей.
+        Vector3 size = new Vector3(width * 0.84f, Mathf.Abs(depth), len + 0.05f);
         if (OverlapsPlayer(center, rot, size)) return false;
 
-        var spot = CreateSolid(center, rot, size, false, strokeColor);
+        var spot = CreateSolid(center, rot, size);
         spot.Stroke = stroke;
         stroke.AddSegment(spot);
         return true;
     }
 
-    // Узкий уступ под линией граффити на стене (верх уступа — по линии).
-    void CreateWallLedge(Vector3 a, Vector3 b, Vector3 wallNormal)
+    // Подтёк: капля внизу — маленький объёмный «пшик», на который можно встать.
+    public void CreateDrop(Vector3 surfacePoint, Vector3 wallNormal, Color color)
     {
-        Vector3 d = b - a;
-        float len = d.magnitude;
-        Vector3 up = Vector3.ProjectOnPlane(Vector3.up, d).normalized;
-        Quaternion rot = Quaternion.LookRotation(d / len, up);
-        Vector3 center = (a + b) * 0.5f + wallNormal * (ledgeDepth * 0.5f) - up * (ledgeThickness * 0.5f);
-        Vector3 size = new Vector3(ledgeDepth, ledgeThickness, len + 0.05f);
+        var go = new GameObject("PaintDrop");
+        go.transform.SetParent(paintRoot, false);
+        var drop = go.AddComponent<PaintStroke>();
+        drop.Init(color, StrokeStyle.Raised, wallDepth, true, dryTime);
+
+        Vector3 pos = surfacePoint + wallNormal * 0.03f;
+        Vector3 center = pos + wallNormal * (wallDepth * 0.5f);
+        Quaternion rot = Quaternion.LookRotation(WallUp(wallNormal), wallNormal);
+        Vector3 size = new Vector3(dropWidth * 0.84f, wallDepth, dropWidth * 0.84f);
         if (!OverlapsPlayer(center, rot, size))
-            CreateSolid(center, rot, size, true, strokeColor);
-        hasLastLedge = true;
-        lastLedgePos = b;
-    }
-
-    // Ступенька лесенки: при вертикальном мазке — не чаще, чем раз в ladderStep.
-    void TryLadderLedge(Vector3 pos, Vector3 wallNormal, bool force)
-    {
-        if (!force && hasLastLedge && (pos - lastLedgePos).magnitude < ladderStep) return;
-        CreateSmallLedge(pos, wallNormal, strokeColor, ladderLedgeWidth);
-        hasLastLedge = true;
-        lastLedgePos = pos;
-    }
-
-    // Маленький уступ на стене: используется для лесенки и подтёков.
-    public void CreateSmallLedge(Vector3 surfacePoint, Vector3 wallNormal, Color color, float width)
-    {
-        Vector3 tangent = Vector3.Cross(Vector3.up, wallNormal);
-        if (tangent.sqrMagnitude < 1e-4f) return;
-        Quaternion rot = Quaternion.LookRotation(tangent.normalized, Vector3.up);
-        Vector3 center = surfacePoint + wallNormal * (ledgeDepth * 0.5f) - Vector3.up * (ledgeThickness * 0.5f);
-        Vector3 size = new Vector3(ledgeDepth, ledgeThickness, width);
-        if (OverlapsPlayer(center, rot, size)) return;
-        CreateSolid(center, rot, size, true, color);
-    }
-
-    PaintSpot CreateSolid(Vector3 center, Quaternion rot, Vector3 size, bool visible, Color color)
-    {
-        GameObject go;
-        if (visible)
         {
-            go = GameObject.CreatePrimitive(PrimitiveType.Cube); // уже с BoxCollider
-            go.name = "PaintLedge";
-            var r = go.GetComponent<Renderer>();
-            r.sharedMaterial = ProtoMaterials.Get(color * 0.8f + new Color(0f, 0f, 0f, 0.2f)); // чуть темнее граффити
-            r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            var spot = CreateSolid(center, rot, size);
+            spot.Stroke = drop;
+            drop.AddPad(spot);
         }
-        else
-        {
-            go = new GameObject("PaintPlank");
-            go.AddComponent<BoxCollider>(); // размер 1×1×1, растягивается масштабом
-        }
+        drop.AddPoint(pos, wallNormal, dropWidth);
+    }
 
+    PaintSpot CreateSolid(Vector3 center, Quaternion rot, Vector3 size)
+    {
+        var go = new GameObject("PaintSolid");
+        go.AddComponent<BoxCollider>(); // 1×1×1, растягивается масштабом
         go.layer = PaintLayer;
         go.transform.SetParent(paintRoot, false);
         go.transform.SetPositionAndRotation(center, rot);
         go.transform.localScale = size;
 
         var spot = go.AddComponent<PaintSpot>();
-        spot.Init(color * 0.8f + new Color(0f, 0f, 0f, 0.2f), dryTime, sinkSpeed, maxSink);
+        spot.Init(strokeColor, dryTime, sinkSpeed, maxSink);
         PieceCount++;
         return spot;
     }
@@ -502,14 +496,14 @@ public class PaintSpray : MonoBehaviour
         }
     }
 
-    // Плоская лента без коллайдеров (для подтёков).
-    public PaintStroke CreateLooseStroke(Color color)
+    // Струйка подтёка: тонкая выпуклая лента без коллайдеров.
+    public PaintStroke CreateDripStreak(Color color)
     {
         var go = new GameObject("PaintDrip");
         go.transform.SetParent(paintRoot, false);
-        var s = go.AddComponent<PaintStroke>();
-        s.Init(color, false, dryTime);
-        return s;
+        var streak = go.AddComponent<PaintStroke>();
+        streak.Init(color, StrokeStyle.Raised, 0.05f, false, dryTime);
+        return streak;
     }
 
     // Стереть всю краску и заполнить баллончик (рестарт уровня).

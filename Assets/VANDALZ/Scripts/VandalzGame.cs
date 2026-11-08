@@ -87,7 +87,7 @@ public class VandalzGame : MonoBehaviour
         Shadowed(new Rect(12, 10, 700, 120),
             "WASD — ходить, Shift — бег, Пробел — прыжок\n" +
             "ЛКМ (зажать) — баллончик, Esc — курсор, R — заново\n" +
-            "Пусто — мост, стена — уступ, задержи на стене — подтёк\n" +
+            "Пусто — мост, линия на стене — полка, задержи на стене — подтёк\n" +
             $"Падений: {falls}", smallStyle);
 
         if (Time.time < respawnMessageUntil && !finished)

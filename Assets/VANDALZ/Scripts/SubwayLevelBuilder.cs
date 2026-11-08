@@ -103,7 +103,7 @@ public class SubwayLevelBuilder : MonoBehaviour
 
         var cc = playerGo.AddComponent<CharacterController>();
         cc.height = 1.8f;
-        cc.radius = 0.35f;
+        cc.radius = 0.3f; // граффити на стене выступает на 0.3 м — на нём должно хватать места встать
         cc.center = new Vector3(0, 0.9f, 0);
         cc.stepOffset = 0.35f;
         cc.slopeLimit = 50f;

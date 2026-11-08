@@ -142,7 +142,7 @@ public class SprayEffects : MonoBehaviour
         if (spray.PreviewBlocked) text = "тут стоишь ты";
         else switch (spray.PreviewMode)
         {
-            case SprayMode.Wall: text = "стена — граффити + уступ"; break;
+            case SprayMode.Wall: text = "стена — объёмное граффити"; break;
             case SprayMode.Air: text = "воздух — мост"; break;
             case SprayMode.ExtendBridge: text = "продлить мост"; break;
             case SprayMode.Surface: text = spray.PreviewNormal.y > 0f ? "пол — граффити" : "потолок — граффити"; break;

@@ -27,28 +27,30 @@ public static class PaintTextures
     static Texture2D MakeStrokeTexture()
     {
         // U — поперёк мазка (0..1), V — вдоль (повторяется).
-        const int w = 64, h = 128;
+        // Плотная ровная середина, мягкий край и редкая мелкая пыль распыления за краем.
+        const int w = 128, h = 128;
         var tex = new Texture2D(w, h, TextureFormat.RGBA32, true)
         {
             wrapModeU = TextureWrapMode.Clamp,
             wrapModeV = TextureWrapMode.Repeat,
-            filterMode = FilterMode.Bilinear,
+            filterMode = FilterMode.Trilinear,
+            anisoLevel = 4,
         };
         var rng = new System.Random(21);
         for (int y = 0; y < h; y++)
         {
-            // Край мазка чуть «гуляет» вдоль длины (плавно и бесшовно по V).
-            float wobble = 0.06f * Mathf.Sin(y * Mathf.PI * 2f / h * 3f) + 0.03f * Mathf.Sin(y * Mathf.PI * 2f / h * 7f);
+            // Край чуть «гуляет» вдоль длины (плавно и бесшовно по V).
+            float t = y * Mathf.PI * 2f / h;
+            float wobble = 0.025f * Mathf.Sin(t * 2f) + 0.012f * Mathf.Sin(t * 5f + 1.3f);
             for (int x = 0; x < w; x++)
             {
                 float u = (x + 0.5f) / w;
                 float d = Mathf.Abs(u - 0.5f) * 2f + wobble; // 0 в центре, 1 на краю
-                float core = 1f - Smooth(0.5f, 0.85f, d);
-                // Брызги у края.
+                float core = 1f - Smooth(0.6f, 0.95f, d);
                 float r = (float)rng.NextDouble();
-                float speckle = d > 0.55f && d < 1.05f && r < (1.05f - d) * 0.45f ? 0.85f : 0f;
-                float a = Mathf.Max(core, speckle);
-                float shade = 1f - (float)rng.NextDouble() * 0.12f; // лёгкая зернистость
+                float mist = d > 0.8f && d < 1.15f && r < (1.15f - d) * 0.3f ? 0.35f : 0f;
+                float a = Mathf.Max(core, mist);
+                float shade = 1f - (float)rng.NextDouble() * 0.05f; // едва заметная зернистость
                 tex.SetPixel(x, y, new Color(shade, shade, shade, a));
             }
         }
