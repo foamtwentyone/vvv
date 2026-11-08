@@ -23,6 +23,10 @@ public class PaintStroke : MonoBehaviour
     public float Depth { get; private set; }
     public int Count => points.Count;
     public Vector3 LastPoint => points[points.Count - 1];
+    public Vector3 LastNormal => normals[normals.Count - 1];
+    public float LastWidth => widths[widths.Count - 1];
+    // Направление последнего отрезка (ноль, если точка одна).
+    public Vector3 LastDirection => points.Count < 2 ? Vector3.zero : (points[points.Count - 1] - points[points.Count - 2]).normalized;
 
     const float BeadHalfWidth = 0.45f; // полуширина валика (доля ширины мазка)
     const int WallProfile = 11;        // точек в полуовальном сечении валика на стене
