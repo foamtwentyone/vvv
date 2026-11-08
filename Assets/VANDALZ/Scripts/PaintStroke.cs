@@ -5,15 +5,14 @@ using UnityEngine;
 public enum StrokeStyle
 {
     Flat,    // пол / потолок: плоское граффити с ореолом распыления
-    Raised,  // стена: граффити выступает из стены на depth (объёмные буквы)
-    Bridge,  // мост: лента в воздухе толщиной depth (вниз от верха)
+    Raised,  // стена: валик густой краски, выступает из стены на depth
+    Bridge,  // мост: сплюснутый валик толщиной depth (вниз от верха)
 }
 
 // Один мазок: меш вдоль точек.
-//  - «лицо» мазка (верх моста / передняя грань на стене / граффити на полу) — прозрачная текстура баллончика
-//    с мягкими краями (submesh 1, материал PaintTextures.Stroke);
-//  - бока, торцы и низ — непрозрачные и освещённые (submesh 0, свой материал у каждого мазка);
-//  - вокруг граффити на стене и полу — бледный ореол распыления.
+//  - Flat: плоская лента с текстурой баллончика (мягкие края) + бледный ореол;
+//  - Raised / Bridge: объёмный «валик» краски с округлым сечением и скруглёнными концами
+//    (освещённый, со слабым свечением), у Raised ещё ореол распыления на стене.
 // Коллайдеры (PaintSpot) создаёт PaintSpray и передаёт сюда через AddSegment / AddPad.
 // Когда мокрая плита проседает, вершины мазка опускаются вместе с ней.
 public class PaintStroke : MonoBehaviour
@@ -25,7 +24,12 @@ public class PaintStroke : MonoBehaviour
     public int Count => points.Count;
     public Vector3 LastPoint => points[points.Count - 1];
 
-    const float SolidFraction = 0.42f; // полуширина твёрдой части (доля ширины); края лица мягко свисают
+    const float BeadHalfWidth = 0.45f; // полуширина валика (доля ширины мазка)
+    const int WallProfile = 11;        // точек в полуовальном сечении валика на стене
+    const int BridgeProfile = 18;      // точек в замкнутом сечении моста
+    const int TipRings = 5;            // колец в скруглённом конце
+    const float WallRoundness = 2.6f;  // 2 — эллипс, больше — «квадратнее»
+    const float BridgeRoundness = 4f;
 
     readonly List<Vector3> points = new List<Vector3>();
     readonly List<Vector3> normals = new List<Vector3>();
@@ -36,17 +40,17 @@ public class PaintStroke : MonoBehaviour
 
     // Буферы меша.
     readonly List<Vector3> verts = new List<Vector3>();
+    readonly List<Vector3> norms = new List<Vector3>();
     readonly List<Vector2> uvs = new List<Vector2>();
     readonly List<Color> colors = new List<Color>();
-    readonly List<Vector3> norms = new List<Vector3>();
     readonly List<int> solidTris = new List<int>();
     readonly List<int> faceTris = new List<int>();
 
-    // Данные точек на время сборки.
+    // Данные точек на время сборки (одиночная точка превращается в две близкие).
     Vector3[] P = new Vector3[0], S = new Vector3[0], D = new Vector3[0], N = new Vector3[0];
     float[] V = new float[0], W = new float[0];
-    int[] TI = new int[0]; // индекс исходной точки (для времени высыхания)
-    int count;            // сколько точек в массивах выше
+    int[] TI = new int[0];
+    int count;
 
     Mesh mesh;
     Material solidMaterial;
@@ -67,6 +71,7 @@ public class PaintStroke : MonoBehaviour
 
         var mr = gameObject.AddComponent<MeshRenderer>();
         solidMaterial = new Material(ProtoMaterials.Get(Color.white));
+        solidMaterial.EnableKeyword("_EMISSION"); // лёгкое свечение — краска яркая даже в тени
         mr.sharedMaterials = new[] { solidMaterial, PaintTextures.Stroke };
         mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
     }
@@ -86,7 +91,7 @@ public class PaintStroke : MonoBehaviour
 
     void Update()
     {
-        // Пока краска мокрая — обновляем цвет и прогиб. Потом мазок статичен.
+        // Пока краска мокрая — обновляем цвет, блеск и прогиб. Потом мазок статичен.
         if (Time.time - lastChangeTime <= dryTime + 0.2f) Rebuild();
     }
 
@@ -98,10 +103,9 @@ public class PaintStroke : MonoBehaviour
 
     float Wet(int i) => dryTime > 0f ? Mathf.Clamp01(1f - (Time.time - times[i]) / dryTime) : 0f;
 
-    Color WetColor(int i, float shade)
+    Color WetColor(int i)
     {
-        Color c = StrokeColor * shade;
-        c = Color.Lerp(c, Color.white, 0.45f * Wet(i));
+        Color c = Color.Lerp(StrokeColor, Color.white, 0.35f * Wet(i));
         c.a = 1f;
         return c;
     }
@@ -116,13 +120,50 @@ public class PaintStroke : MonoBehaviour
         return s;
     }
 
+    // ---------- Сборка меша ----------
+
     void Rebuild()
     {
         int n = points.Count;
-        verts.Clear(); uvs.Clear(); colors.Clear(); norms.Clear(); solidTris.Clear(); faceTris.Clear();
+        verts.Clear(); norms.Clear(); uvs.Clear(); colors.Clear(); solidTris.Clear(); faceTris.Clear();
         if (n == 0) { mesh.Clear(); return; }
 
-        // Одиночная точка («пшик») превращается в короткий отрезок, чтобы у неё были бока.
+        PreparePoints(n);
+
+        if (Style == StrokeStyle.Flat)
+        {
+            AddSoftStrip(faceTris, 1.9f, -0.003f, 0.22f); // ореол
+            AddSoftStrip(faceTris, 1f, 0.001f, 1f);       // само граффити
+        }
+        else
+        {
+            if (Style == StrokeStyle.Raised) AddSoftStrip(faceTris, 2.1f, 0f, 0.25f); // ореол на стене
+            AddBead();
+        }
+
+        mesh.Clear();
+        mesh.subMeshCount = 2;
+        mesh.SetVertices(verts);
+        mesh.SetNormals(norms);
+        mesh.SetUVs(0, uvs);
+        mesh.SetColors(colors);
+        mesh.SetTriangles(solidTris, 0);
+        mesh.SetTriangles(faceTris, 1);
+        mesh.RecalculateBounds();
+
+        // Валик: цвет мазка, светлее и глянцевее, пока мокрый.
+        int last = TI[count - 1];
+        Color c = WetColor(last);
+        float wet = Wet(last);
+        solidMaterial.color = c;
+        solidMaterial.SetColor("_EmissionColor", c * 0.35f);
+        float smooth = Mathf.Lerp(0.3f, 0.85f, wet);
+        if (solidMaterial.HasProperty("_Glossiness")) solidMaterial.SetFloat("_Glossiness", smooth); // Built-in
+        if (solidMaterial.HasProperty("_Smoothness")) solidMaterial.SetFloat("_Smoothness", smooth); // URP
+    }
+
+    void PreparePoints(int n)
+    {
         int m = n == 1 ? 2 : n;
         if (P.Length < m)
         {
@@ -133,8 +174,9 @@ public class PaintStroke : MonoBehaviour
 
         if (n == 1)
         {
+            // Одиночный «пшик»: две почти совпадающие точки — скруглённые концы сделают из них каплю.
             Vector3 d0 = DirectionAt(0);
-            float half = widths[0] * 0.3f;
+            float half = widths[0] * 0.05f;
             Vector3 p0 = points[0] + Vector3.down * SinkAt(0);
             for (int k = 0; k < 2; k++)
             {
@@ -151,7 +193,6 @@ public class PaintStroke : MonoBehaviour
             }
         }
 
-        // «Бок» и координата V вдоль мазка для каждой точки.
         Vector3 lastSide = Vector3.zero;
         for (int i = 0; i < m; i++)
         {
@@ -163,133 +204,125 @@ public class PaintStroke : MonoBehaviour
             V[i] = i == 0 ? 0f : V[i - 1] + Vector3.Distance(P[i - 1], P[i]) / Mathf.Max(0.05f, W[i]);
         }
         count = m;
-
-        // Плоскость «лица» и «спины» мазка.
-        // Raised: спина на стене, лицо выступает на Depth. Bridge: лицо — верх, спина ниже на Depth.
-        float faceOffset = Style == StrokeStyle.Raised ? Depth : 0f;
-        float backOffset = Style == StrokeStyle.Bridge ? -Depth : 0f;
-
-        // 1) Ореол распыления на поверхности (стена / пол).
-        if (Style != StrokeStyle.Bridge)
-            AddSoftStrip(faceTris, 1.9f, Style == StrokeStyle.Flat ? -0.003f : 0f, 0.22f);
-
-        // 2) Твёрдые бока, торцы, низ.
-        if (Style != StrokeStyle.Flat)
-        {
-            for (int sign = -1; sign <= 1; sign += 2)
-            {
-                int start = verts.Count;
-                for (int i = 0; i < m; i++)
-                {
-                    float h = W[i] * SolidFraction;
-                    Vector3 off = S[i] * (sign * h);
-                    verts.Add(P[i] + N[i] * backOffset + off);
-                    verts.Add(P[i] + N[i] * faceOffset + off);
-                    uvs.Add(new Vector2(0.5f, V[i])); uvs.Add(new Vector2(0.5f, V[i]));
-                    colors.Add(Color.white); colors.Add(Color.white);
-                    norms.Add(S[i] * sign); norms.Add(S[i] * sign);
-                }
-                StripTris(solidTris, start, m);
-            }
-
-            // Торцы.
-            AddCap(0, faceOffset, backOffset, -D[0]);
-            AddCap(m - 1, faceOffset, backOffset, D[m - 1]);
-
-            // Низ моста.
-            if (Style == StrokeStyle.Bridge)
-            {
-                int start = verts.Count;
-                for (int i = 0; i < m; i++)
-                {
-                    float h = W[i] * SolidFraction;
-                    Vector3 c = P[i] + N[i] * backOffset;
-                    verts.Add(c - S[i] * h); verts.Add(c + S[i] * h);
-                    uvs.Add(new Vector2(0.5f, V[i])); uvs.Add(new Vector2(0.5f, V[i]));
-                    colors.Add(Color.white); colors.Add(Color.white);
-                    norms.Add(-N[i]); norms.Add(-N[i]);
-                }
-                StripTris(solidTris, start, m);
-            }
-        }
-
-        // 3) Лицо мазка — текстура баллончика с мягкими краями и концами.
-        AddSoftStrip(faceTris, 1f, faceOffset + (Style == StrokeStyle.Bridge ? 0.002f : 0.001f), 1f);
-
-        mesh.Clear();
-        mesh.subMeshCount = 2;
-        mesh.SetVertices(verts);
-        mesh.SetUVs(0, uvs);
-        mesh.SetColors(colors);
-        mesh.SetNormals(norms);
-        mesh.SetTriangles(solidTris, 0);
-        mesh.SetTriangles(faceTris, 1);
-        mesh.RecalculateBounds();
-
-        // Цвет твёрдой части: темнее граффити, светлее пока мокрая.
-        solidMaterial.color = WetColor(TI[m - 1], 0.7f);
     }
 
-    // Мягкая лента: пары вершин по точкам + прозрачные «хвосты» на концах.
+    // Плоская лента с текстурой баллончика: пары вершин по точкам + прозрачные «хвосты» на концах.
     void AddSoftStrip(List<int> tris, float widthScale, float offset, float alpha)
     {
-        int n = count;
+        int m = count;
         int start = verts.Count;
-        for (int k = -1; k <= n; k++)
+        for (int k = -1; k <= m; k++)
         {
-            int i = Mathf.Clamp(k, 0, n - 1);
+            int i = Mathf.Clamp(k, 0, m - 1);
             float w = W[i] * widthScale;
             Vector3 c = P[i] + N[i] * offset;
             float a = alpha;
             float v = V[i];
             if (k == -1) { c -= D[i] * w * 0.5f; a = 0f; v -= 0.5f * widthScale; }
-            else if (k == n) { c += D[i] * w * 0.5f; a = 0f; v += 0.5f * widthScale; }
+            else if (k == m) { c += D[i] * w * 0.5f; a = 0f; v += 0.5f * widthScale; }
 
             verts.Add(c - S[i] * w * 0.5f);
             verts.Add(c + S[i] * w * 0.5f);
+            norms.Add(N[i]); norms.Add(N[i]);
             uvs.Add(new Vector2(0f, v / widthScale));
             uvs.Add(new Vector2(1f, v / widthScale));
-            Color col = WetColor(TI[i], 1f);
+            Color col = WetColor(TI[i]);
             col.a = a;
             colors.Add(col); colors.Add(col);
-            norms.Add(N[i]); norms.Add(N[i]);
         }
-        StripTris(tris, start, n + 2);
-    }
 
-    void AddCap(int i, float faceOffset, float backOffset, Vector3 outward)
-    {
-        float h = W[i] * SolidFraction;
-        Vector3 back = P[i] + N[i] * backOffset;
-        Vector3 face = P[i] + N[i] * faceOffset;
-        int s = verts.Count;
-        verts.Add(back - S[i] * h); verts.Add(back + S[i] * h);
-        verts.Add(face - S[i] * h); verts.Add(face + S[i] * h);
-        for (int k = 0; k < 4; k++) { uvs.Add(new Vector2(0.5f, 0f)); colors.Add(Color.white); norms.Add(outward); }
-        solidTris.Add(s); solidTris.Add(s + 2); solidTris.Add(s + 1);
-        solidTris.Add(s + 1); solidTris.Add(s + 2); solidTris.Add(s + 3);
-    }
-
-    // Треугольники для ленты из pairs пар вершин, начиная с индекса start.
-    // Обе стороны (нормали заданы вручную), чтобы бока были видны откуда угодно.
-    static void StripTris(List<int> tris, int start, int pairs)
-    {
-        for (int p = 0; p < pairs - 1; p++)
+        for (int p = 0; p < m + 1; p++)
         {
             int a = start + p * 2, b = a + 1, c = a + 2, d = a + 3;
             tris.Add(a); tris.Add(c); tris.Add(b);
             tris.Add(b); tris.Add(c); tris.Add(d);
-            tris.Add(a); tris.Add(b); tris.Add(c);
-            tris.Add(b); tris.Add(d); tris.Add(c);
         }
     }
+
+    // Объёмный валик: кольца сечения вдоль мазка + скруглённые концы.
+    void AddBead()
+    {
+        int m = count;
+        bool bridge = Style == StrokeStyle.Bridge;
+        int profile = bridge ? BridgeProfile : WallProfile;
+        int start = verts.Count;
+        int rings = 0;
+
+        // Начало: кольца от острия к полному сечению.
+        for (int j = TipRings; j >= 1; j--) { AddRing(0, j, -1f, bridge, profile); rings++; }
+        for (int i = 0; i < m; i++) { AddRing(i, 0, 0f, bridge, profile); rings++; }
+        // Конец: от полного сечения к острию.
+        for (int j = 1; j <= TipRings; j++) { AddRing(m - 1, j, 1f, bridge, profile); rings++; }
+
+        // Треугольники между соседними кольцами (обе стороны — нормали заданы вручную).
+        int edges = bridge ? profile : profile - 1;
+        for (int r = 0; r < rings - 1; r++)
+        {
+            int ring0 = start + r * profile, ring1 = ring0 + profile;
+            for (int k = 0; k < edges; k++)
+            {
+                int k1 = (k + 1) % profile;
+                int a = ring0 + k, b = ring0 + k1, c = ring1 + k, d = ring1 + k1;
+                solidTris.Add(a); solidTris.Add(c); solidTris.Add(b);
+                solidTris.Add(b); solidTris.Add(c); solidTris.Add(d);
+                solidTris.Add(a); solidTris.Add(b); solidTris.Add(c);
+                solidTris.Add(b); solidTris.Add(d); solidTris.Add(c);
+            }
+        }
+    }
+
+    // Одно кольцо сечения у точки i. tipStep > 0 — кольцо скруглённого конца (сжато и сдвинуто по dirSign).
+    void AddRing(int i, int tipStep, float dirSign, bool bridge, int profile)
+    {
+        float h = W[i] * BeadHalfWidth;
+        float scale = 1f, along = 0f, blendCos = 1f, blendSin = 0f;
+        if (tipStep > 0)
+        {
+            float phi = tipStep / (float)TipRings * Mathf.PI * 0.5f;
+            float tipLength = bridge ? h : Mathf.Max(h, Depth * 0.6f); // у валика на стене кончик подлиннее
+            scale = Mathf.Cos(phi);
+            along = Mathf.Sin(phi) * tipLength * dirSign;
+            blendCos = Mathf.Cos(phi);
+            blendSin = Mathf.Sin(phi) * dirSign;
+        }
+
+        Vector3 dir = D[i], side = S[i], up = N[i];
+        float roundness = bridge ? BridgeRoundness : WallRoundness;
+        float halfH = bridge ? Depth * 0.5f : Depth;
+        // Центр сечения: у моста — середина толщины, у валика — чуть «утоплен» в стену, чтобы не было щели.
+        Vector3 center = P[i] + dir * along + (bridge ? -up * halfH : -up * 0.01f);
+
+        for (int k = 0; k < profile; k++)
+        {
+            float theta = bridge
+                ? k / (float)profile * Mathf.PI * 2f
+                : k / (float)(profile - 1) * Mathf.PI;
+            float c = Mathf.Cos(theta), s = Mathf.Sin(theta);
+            float u = SignPow(c, 2f / roundness), v = SignPow(s, 2f / roundness);
+
+            Vector3 pos = center + side * (u * h * scale) + up * (v * halfH * scale);
+
+            // Нормаль суперэллипса + наклон вдоль мазка на концах.
+            Vector3 nrm = side * (SignPow(u, roundness - 1f) / Mathf.Max(h, 1e-3f))
+                        + up * (SignPow(v, roundness - 1f) / Mathf.Max(halfH, 1e-3f));
+            nrm = nrm.sqrMagnitude > 1e-8f ? nrm.normalized : up;
+            nrm = (nrm * blendCos + dir * blendSin).normalized;
+
+            verts.Add(pos);
+            norms.Add(nrm);
+            uvs.Add(new Vector2(0.5f, 0.5f));
+            colors.Add(Color.white);
+        }
+    }
+
+    static float SignPow(float x, float p) => Mathf.Sign(x) * Mathf.Pow(Mathf.Abs(x), p);
 
     Vector3 DirectionAt(int i)
     {
         int n = points.Count;
         if (n < 2)
         {
-            // Одиночная точка (короткий «пшик»): любое направление в плоскости поверхности.
+            // Одиночная точка: любое направление в плоскости поверхности.
             Vector3 d0 = Vector3.ProjectOnPlane(Vector3.up, normals[i]);
             if (d0.sqrMagnitude < 1e-4f) d0 = Vector3.ProjectOnPlane(Vector3.forward, normals[i]);
             return d0.normalized;
